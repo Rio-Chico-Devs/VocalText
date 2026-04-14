@@ -1,0 +1,63 @@
+{
+  "name": "vocaltext",
+  "version": "1.0.0",
+  "description": "Desktop offline text-to-speech app powered by Piper TTS",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder",
+    "build:linux": "electron-builder --linux",
+    "build:mac": "electron-builder --mac",
+    "build:win": "electron-builder --win",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "keywords": ["text-to-speech", "tts", "offline", "piper", "desktop"],
+  "author": "VocalText",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^29.0.0",
+    "electron-builder": "^24.9.1"
+  },
+  "dependencies": {
+    "electron-store": "^8.2.0",
+    "node-fetch": "^2.7.0"
+  },
+  "build": {
+    "appId": "com.vocaltext.app",
+    "productName": "VocalText",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "tts/**/*",
+      "assets/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "bin/${os}",
+        "to": "bin",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "models",
+        "to": "models",
+        "filter": ["**/*"]
+      }
+    ],
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Audio"
+    },
+    "mac": {
+      "target": ["dmg"],
+      "category": "public.app-category.utilities"
+    },
+    "win": {
+      "target": ["nsis"]
+    }
+  }
+}

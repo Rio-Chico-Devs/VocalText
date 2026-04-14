@@ -1,0 +1,14 @@
+node_modules/
+dist/
+build/
+.DS_Store
+*.log
+*.tmp
+models/*.onnx
+models/*.onnx.json
+bin/
+*.AppImage
+*.dmg
+*.exe
+*.deb
+.env
