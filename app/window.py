@@ -85,6 +85,7 @@ class VocalTextApp(ctk.CTk):
         self._voice_frame = ctk.CTkScrollableFrame(sb, fg_color="transparent", label_text="")
         self._voice_frame.grid(row=4, column=0, sticky="nsew", padx=8)
         sb.grid_rowconfigure(4, weight=1)
+        self._voice_rows: dict[str, ctk.CTkFrame] = {}   # voice.id -> row widget
 
         # Parameters
         params = ctk.CTkFrame(sb, fg_color="transparent")
@@ -243,6 +244,7 @@ class VocalTextApp(ctk.CTk):
     def _render_voices(self, voices: list[Voice]):
         for w in self._voice_frame.winfo_children():
             w.destroy()
+        self._voice_rows.clear()
 
         if not voices:
             ctk.CTkLabel(self._voice_frame,
@@ -251,7 +253,6 @@ class VocalTextApp(ctk.CTk):
                          justify="left").pack(anchor="w", padx=4, pady=6)
             return
 
-        # Group by engine
         piper_voices = [v for v in voices if v.engine == "piper"]
         sys_voices   = [v for v in voices if v.engine != "piper"]
 
@@ -262,12 +263,13 @@ class VocalTextApp(ctk.CTk):
 
         if sys_voices:
             self._section_label("Sistema · Base")
-            for v in sys_voices[:12]:   # cap at 12 system voices
+            for v in sys_voices[:12]:
                 self._voice_btn(v)
 
-        # auto-select first
+        # auto-select first, passing the row widget for highlight
         if voices and self._voice is None:
-            self._select_voice(voices[0])
+            first = voices[0]
+            self._select_voice(first, self._voice_rows.get(first.id))
 
     def _section_label(self, text: str):
         ctk.CTkLabel(self._voice_frame, text=text,
@@ -300,20 +302,19 @@ class VocalTextApp(ctk.CTk):
         # Store ref for selection highlight
         row._voice = voice
         row._name_lbl = name_lbl
+        self._voice_rows[voice.id] = row
 
         for w in (row, indicator, info, name_lbl, meta_lbl):
             w.bind("<Button-1>", lambda _, v=voice, r=row: self._select_voice(v, r))
 
     def _select_voice(self, voice: Voice, row_widget=None):
         self._voice = voice
-        # Reset all rows
-        for w in self._voice_frame.winfo_children():
-            if hasattr(w, "_name_lbl"):
-                w._name_lbl.configure(text_color=("black", "white"))
-            if isinstance(w, ctk.CTkFrame):
-                w.configure(fg_color="transparent")
+        # Reset all rows using the stored dict (avoids CTkScrollableFrame children issues)
+        for row in self._voice_rows.values():
+            row.configure(fg_color="transparent")
+            row._name_lbl.configure(text_color=("gray10", "gray90"))
         # Highlight selected
-        if row_widget:
+        if row_widget and row_widget.winfo_exists():
             row_widget.configure(fg_color=("gray85", "#1e2d24"))
             row_widget._name_lbl.configure(text_color=ACCENT)
 

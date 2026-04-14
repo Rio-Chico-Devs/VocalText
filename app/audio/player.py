@@ -168,6 +168,7 @@ class AudioPlayer:
 
         def _watch():
             import pygame
+            cb = None
             while True:
                 time.sleep(0.1)
                 with self._lock:
