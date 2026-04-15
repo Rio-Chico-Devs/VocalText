@@ -6,3 +6,4 @@ Pillow>=10.0.0
 # XTTS v2 (optional – install TTS separately: pip install TTS)
 # Pin transformers to 4.x – TTS 0.22.x uses BeamSearchScorer removed in 5.x
 transformers>=4.33.0,<5.0.0
+torchaudio
