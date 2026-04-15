@@ -111,6 +111,12 @@ class XTTSEngine:
                 try:
                     if on_progress:
                         on_progress("Caricamento modello XTTS v2… (può richiedere 1-2 min)")
+                    # torchaudio 2.x: force soundfile backend (avoids torchcodec dependency)
+                    try:
+                        import torchaudio as _ta
+                        _ta.set_audio_backend("soundfile")
+                    except Exception:
+                        pass
                     # PyTorch 2.6+ fix: weights_only default changed to True,
                     # breaking Coqui TTS model loading. Restore False for trusted local files.
                     import torch as _torch
