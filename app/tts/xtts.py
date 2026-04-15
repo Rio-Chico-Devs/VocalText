@@ -54,6 +54,34 @@ RECOMMENDED_IT = [
 ]
 
 
+def _patch_torchaudio():
+    """
+    Sostituisce torchaudio.load con un'implementazione basata su soundfile,
+    bypassando completamente torchcodec (richiede FFmpeg, non disponibile).
+    Compatibile con torchaudio 2.x che ha rimosso set_audio_backend().
+    """
+    try:
+        import soundfile as _sf
+        import torch as _torch
+        import torchaudio as _ta
+
+        def _sf_load(uri, frame_offset=0, num_frames=-1,
+                     normalize=True, channels_first=True,
+                     format=None, backend=None):
+            data, sr = _sf.read(str(uri), dtype="float32", always_2d=True)
+            # soundfile → (frames, channels); torchaudio → (channels, frames)
+            wav = _torch.from_numpy(data.T.copy())
+            if frame_offset > 0:
+                wav = wav[:, frame_offset:]
+            if num_frames > 0:
+                wav = wav[:, :num_frames]
+            return wav, sr
+
+        _ta.load = _sf_load
+    except Exception:
+        pass  # soundfile non installato: fallback al comportamento originale
+
+
 class XTTSEngine:
     """
     Singleton per XTTS v2. Il modello viene caricato una sola volta
@@ -111,12 +139,8 @@ class XTTSEngine:
                 try:
                     if on_progress:
                         on_progress("Caricamento modello XTTS v2… (può richiedere 1-2 min)")
-                    # torchaudio 2.x: force soundfile backend (avoids torchcodec dependency)
-                    try:
-                        import torchaudio as _ta
-                        _ta.set_audio_backend("soundfile")
-                    except Exception:
-                        pass
+                    # Patch torchaudio.load → soundfile (evita torchcodec/FFmpeg)
+                    _patch_torchaudio()
                     # PyTorch 2.6+ fix: weights_only default changed to True,
                     # breaking Coqui TTS model loading. Restore False for trusted local files.
                     import torch as _torch
@@ -170,6 +194,8 @@ class XTTSEngine:
         else:
             kwargs["speaker"] = speaker_name or BUILTIN_SPEAKERS[0]
 
+        # Assicura che torchaudio usi soundfile anche durante la generazione
+        _patch_torchaudio()
         cls._tts.tts_to_file(**kwargs)
 
         if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
