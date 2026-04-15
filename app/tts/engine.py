@@ -85,8 +85,8 @@ class TTSEngine:
             return False
 
     def has_xtts(self) -> bool:
-        from app.tts.xtts import XTTSEngine
-        return XTTSEngine.is_available()
+        import importlib.util
+        return importlib.util.find_spec("TTS") is not None
 
     def has_piper(self) -> bool:
         return self._piper_bin is not None

@@ -69,12 +69,9 @@ class XTTSEngine:
 
     @classmethod
     def is_available(cls) -> bool:
-        """Verifica se il pacchetto TTS è installato."""
-        try:
-            import TTS  # noqa: F401
-            return True
-        except ImportError:
-            return False
+        """Verifica se il pacchetto TTS è installato SENZA importarlo."""
+        import importlib.util
+        return importlib.util.find_spec("TTS") is not None
 
     @classmethod
     def is_loaded(cls) -> bool:
