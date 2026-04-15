@@ -52,6 +52,7 @@ class VocalTextApp(ctk.CTk):
         self._build()
         self.after(120, self._load_voices)
         self.after(120, self._check_engine)
+        self.after(400, self._preload_xtts)   # avvia XTTS in background subito
         self.after(200, self._tick)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -311,6 +312,27 @@ class VocalTextApp(ctk.CTk):
         self._status_lbl.configure(
             text=f"● {msg}", text_color=colors.get(level, "gray"))
 
+    def _preload_xtts(self):
+        """Carica il modello XTTS in background appena l'app si apre."""
+        if not self.engine.has_xtts():
+            return
+        from app.tts.xtts import XTTSEngine
+        if XTTSEngine.is_loaded() or XTTSEngine.is_loading():
+            return
+        self._status_lbl.configure(
+            text="● Caricamento XTTS v2…", text_color=WARN)
+        XTTSEngine.load_model(
+            on_progress=lambda m: self.after(
+                0, lambda: self._status_lbl.configure(
+                    text="● Caricamento XTTS v2…", text_color=WARN)),
+            on_done=lambda: self.after(
+                0, lambda: self._status_lbl.configure(
+                    text="● XTTS v2 pronto", text_color=ACCENT)),
+            on_error=lambda e: self.after(
+                0, lambda: self._status_lbl.configure(
+                    text="● XTTS errore caricamento", text_color=DANGER)),
+        )
+
     def _load_voices(self):
         def _fetch():
             voices = self.engine.get_all_voices()
@@ -486,30 +508,15 @@ class VocalTextApp(ctk.CTk):
             self._show_error("Seleziona una voce dalla lista a sinistra.")
             return
 
-        # XTTS: avvisa se il modello non è ancora caricato
+        # XTTS: se ancora in caricamento mostra stato ma procede comunque
+        # (il thread di generazione attende internamente fino a 5 minuti)
         if self._voice.engine == "xtts":
             from app.tts.xtts import XTTSEngine
             if not XTTSEngine.is_loaded():
-                self._show_error(
-                    "⏳ Caricamento modello XTTS v2 in corso… "
-                    "La prima volta può richiedere 1-2 minuti. "
-                    "Ripremi Genera quando lo stato è verde.",
-                    color=WARN)
-                # Avvia il caricamento in background
-                XTTSEngine.load_model(
-                    on_progress=lambda m: self.after(
-                        0, lambda: self._status_lbl.configure(
-                            text=f"● {m}", text_color=WARN)),
-                    on_done=lambda: self.after(
-                        0, lambda: (
-                            self._status_lbl.configure(
-                                text="● XTTS v2 pronto",
-                                text_color=ACCENT),
-                            self._hide_error())),
-                    on_error=lambda e: self.after(
-                        0, lambda: self._show_error(f"Errore XTTS: {e}")),
-                )
-                return
+                if not XTTSEngine.is_loading():
+                    self._preload_xtts()
+                self._status_lbl.configure(
+                    text="● Caricamento XTTS v2…", text_color=WARN)
 
         self._gen_btn.configure(state="disabled",
                                 text="⏳  Generazione in corso…")
