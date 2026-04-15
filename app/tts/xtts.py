@@ -111,8 +111,16 @@ class XTTSEngine:
                 try:
                     if on_progress:
                         on_progress("Caricamento modello XTTS v2… (può richiedere 1-2 min)")
-                    from TTS.api import TTS
-                    cls._tts = TTS(XTTS_MODEL)
+                    # PyTorch 2.6+ fix: weights_only default changed to True,
+                    # breaking Coqui TTS model loading. Restore False for trusted local files.
+                    import torch as _torch
+                    _orig_load = _torch.load
+                    _torch.load = lambda *a, **kw: _orig_load(*a, **{**kw, "weights_only": False})
+                    try:
+                        from TTS.api import TTS
+                        cls._tts = TTS(XTTS_MODEL)
+                    finally:
+                        _torch.load = _orig_load
                     if on_done:
                         on_done()
                 except Exception as exc:
