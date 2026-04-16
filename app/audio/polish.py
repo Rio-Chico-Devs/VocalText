@@ -4,6 +4,7 @@ Applica: high-pass, noise reduction, EQ voce, compressione, normalizzazione LUFS
 limiter, fade in/out.
 
 Usa pedalboard (Spotify) se disponibile, altrimenti scipy come fallback.
+Se il processing produce output vuoto/silenzioso, usa l'audio originale.
 """
 
 import wave
@@ -38,6 +39,11 @@ def _write_wav(path: str, samples: np.ndarray, sr: int):
         wf.writeframes(data.tobytes())
 
 
+def _is_valid(samples: np.ndarray) -> bool:
+    """Verifica che l'audio non sia vuoto o completamente silenzioso."""
+    return len(samples) > 0 and float(np.max(np.abs(samples))) > 0.001
+
+
 # ── Pipeline ───────────────────────────────────────────────────────────────────
 
 def polish(input_path: str, output_path: str | None = None,
@@ -45,56 +51,71 @@ def polish(input_path: str, output_path: str | None = None,
     """
     Rifinisce il WAV audio con una catena professionale.
     Se output_path è None sovrascrive il file sorgente.
+    Se il processing fallisce o produce silenzio, mantiene l'originale.
     """
     if output_path is None:
         output_path = input_path
-    samples, sr = _read_wav(input_path)
-    samples = _process(samples, sr, target_lufs)
-    _write_wav(output_path, samples, sr)
+
+    original, sr = _read_wav(input_path)
+
+    if not _is_valid(original):
+        return  # file originale già vuoto, niente da fare
+
+    try:
+        processed = _process(original.copy(), sr, target_lufs)
+        if _is_valid(processed):
+            _write_wav(output_path, processed, sr)
+        else:
+            # Il processing ha prodotto silenzio — usa l'originale
+            _write_wav(output_path, original, sr)
+    except Exception:
+        # Qualsiasi errore → scrivi comunque l'originale
+        _write_wav(output_path, original, sr)
 
 
 def _process(samples: np.ndarray, sr: int, target_lufs: float) -> np.ndarray:
     try:
-        return _process_pedalboard(samples, sr, target_lufs)
+        result = _process_pedalboard(samples, sr, target_lufs)
+        if _is_valid(result):
+            return result
+        # pedalboard ha restituito silenzio → prova il fallback
+        return _process_basic(samples, sr, target_lufs)
     except ImportError:
+        return _process_basic(samples, sr, target_lufs)
+    except Exception:
         return _process_basic(samples, sr, target_lufs)
 
 
 def _process_pedalboard(samples: np.ndarray, sr: int,
                          target_lufs: float) -> np.ndarray:
-    from pedalboard import (Pedalboard, HighpassFilter, LowpassFilter,
-                             PeakFilter, LowShelfFilter, Compressor,
-                             Limiter, NoiseGate)
+    from pedalboard import (Pedalboard, HighpassFilter,
+                             PeakFilter, LowShelfFilter,
+                             Compressor, Limiter)
 
     audio = samples[np.newaxis, :]   # (1, N) per pedalboard
 
     board = Pedalboard([
         # Rimuove rumble e offset DC
         HighpassFilter(cutoff_frequency_hz=80.0),
-        # Taglia ultra-high non necessario per la voce
-        LowpassFilter(cutoff_frequency_hz=16000.0),
-        # Noise gate leggero per eliminare artefatti in silenzio
-        NoiseGate(threshold_db=-55.0, ratio=2.0,
-                  attack_ms=5.0, release_ms=100.0),
-        # Presenza voce (chiarezza 2–4 kHz)
+        # Presenza voce (chiarezza 2-4 kHz)
         PeakFilter(cutoff_frequency_hz=3000.0, gain_db=1.5, q=0.8),
         # Calore basse frequenze voce
         LowShelfFilter(cutoff_frequency_hz=200.0, gain_db=0.8),
-        # Compressione moderata – uniforma le dinamiche
-        Compressor(threshold_db=-22.0, ratio=3.5,
-                   attack_ms=8.0, release_ms=120.0),
-        # Hard limiter – evita qualsiasi clipping
+        # Compressione leggera – uniforma le dinamiche
+        Compressor(threshold_db=-20.0, ratio=3.0,
+                   attack_ms=10.0, release_ms=150.0),
+        # Hard limiter – evita clipping
         Limiter(threshold_db=-1.0, release_ms=100.0),
     ])
 
-    audio = board(audio, sr)
-    samples = audio[0]
+    out = board(audio, sr)
+    samples = out[0]
 
-    # Noise reduction spettrale
+    # Noise reduction opzionale
     try:
         import noisereduce as nr
         samples = nr.reduce_noise(y=samples, sr=sr,
-                                  stationary=True, prop_decrease=0.75)
+                                  stationary=True, prop_decrease=0.6)
     except ImportError:
         pass
 
@@ -104,7 +125,7 @@ def _process_pedalboard(samples: np.ndarray, sr: int,
 
 def _process_basic(samples: np.ndarray, sr: int,
                     target_lufs: float) -> np.ndarray:
-    """Fallback senza pedalboard – usa scipy."""
+    """Fallback senza pedalboard – usa solo numpy + librerie opzionali."""
     try:
         from scipy import signal
         sos = signal.butter(4, 80.0 / (sr / 2), btype="high", output="sos")
@@ -115,7 +136,7 @@ def _process_basic(samples: np.ndarray, sr: int,
     try:
         import noisereduce as nr
         samples = nr.reduce_noise(y=samples, sr=sr,
-                                  stationary=True, prop_decrease=0.75)
+                                  stationary=True, prop_decrease=0.6)
     except ImportError:
         pass
 
@@ -131,15 +152,19 @@ def _lufs_normalize(samples: np.ndarray, sr: int,
         import pyloudnorm as pyln
         meter    = pyln.Meter(sr)
         loudness = meter.integrated_loudness(samples)
-        if loudness > -70.0:
-            samples = pyln.normalize.loudness(samples, loudness, target_lufs)
-        return samples
+        if loudness > -70.0 and np.isfinite(loudness):
+            normalized = pyln.normalize.loudness(samples, loudness, target_lufs)
+            # Sanity check: la normalizzazione non deve azzerare l'audio
+            if _is_valid(normalized):
+                return normalized
     except (ImportError, Exception):
-        # Fallback: normalizzazione al picco
-        peak = np.max(np.abs(samples))
-        if peak > 0:
-            samples = samples / peak * 0.9
-        return samples
+        pass
+
+    # Fallback: normalizzazione al picco
+    peak = float(np.max(np.abs(samples)))
+    if peak > 0:
+        samples = samples / peak * 0.9
+    return samples
 
 
 def _fade(samples: np.ndarray, sr: int, ms: int = 8) -> np.ndarray:
