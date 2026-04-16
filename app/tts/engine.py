@@ -230,6 +230,7 @@ class TTSEngine:
         language: str = "it",
         reference_wav: str | None = None,
         output_path: str | None = None,
+        polish: bool = False,
         on_done=None,
         on_error=None,
     ):
@@ -246,6 +247,12 @@ class TTSEngine:
                     self._generate_piper(text, voice, speed, output_path)
                 else:
                     self._generate_pyttsx3(text, voice, speed, volume, output_path)
+                if polish:
+                    try:
+                        from app.audio.polish import polish as _polish
+                        _polish(output_path)
+                    except Exception:
+                        pass
                 if on_done:
                     on_done(output_path)
             except Exception as exc:

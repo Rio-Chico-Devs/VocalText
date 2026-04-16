@@ -42,9 +42,10 @@ class VocalTextApp(ctk.CTk):
         self.player = AudioPlayer()
 
         self._voice: Voice | None = None
-        self._speed  = tk.DoubleVar(value=1.0)
-        self._volume = tk.DoubleVar(value=1.0)
-        self._lang   = tk.StringVar(value="it")
+        self._speed   = tk.DoubleVar(value=1.0)
+        self._volume  = tk.DoubleVar(value=1.0)
+        self._lang    = tk.StringVar(value="it")
+        self._polish  = tk.BooleanVar(value=True)
         self._ref_wav: str | None = None
         self._audio_path: str | None = None
         self._voice_rows: dict[str, ctk.CTkFrame] = {}
@@ -180,6 +181,28 @@ class VocalTextApp(ctk.CTk):
             progress_color=ACCENT,
             command=lambda v: self._vol_lbl.configure(
                 text=f"Volume  {int(float(v)*100)}%")).pack(fill="x")
+
+        # ── Rifinitura audio ──
+        polish_row = ctk.CTkFrame(params, fg_color="transparent")
+        polish_row.pack(fill="x", pady=(12, 0))
+        ctk.CTkLabel(polish_row, text="Rifinitura audio",
+                     font=ctk.CTkFont(size=12), anchor="w").pack(side="left")
+        ctk.CTkSwitch(
+            polish_row, text="", variable=self._polish, width=40,
+            button_color=ACCENT, button_hover_color=ACCENT_D,
+            progress_color=ACCENT).pack(side="right")
+        ctk.CTkLabel(
+            params,
+            text="EQ voce · compressione · normalizzazione LUFS",
+            font=ctk.CTkFont(size=10), text_color="gray",
+            anchor="w", justify="left").pack(fill="x")
+
+        # ── Pannello tag effetti ──
+        ctk.CTkButton(
+            params, text="📋  Tag effetti disponibili",
+            height=26, fg_color="transparent", border_width=1,
+            font=ctk.CTkFont(size=11),
+            command=self._show_tags_help).pack(fill="x", pady=(10, 0))
 
     # ── Main area ──────────────────────────────────────────────────────────
 
@@ -431,6 +454,42 @@ class VocalTextApp(ctk.CTk):
         else:
             self._xtts_panel.grid_remove()
 
+    # ── Tag effetti ───────────────────────────────────────────────────────
+
+    def _show_tags_help(self):
+        from app.audio.effects import get_tags_help
+        win = ctk.CTkToplevel(self)
+        win.title("Tag effetti sonori")
+        win.geometry("360x420")
+        win.resizable(False, False)
+        win.grab_set()
+
+        ctk.CTkLabel(win, text="Inserisci questi tag nel testo",
+                     font=ctk.CTkFont(size=13, weight="bold")).pack(pady=(16, 4))
+        ctk.CTkLabel(win,
+                     text="Gli effetti vengono generati con la voce selezionata\n"
+                          "e cachati offline nella cartella effects/",
+                     font=ctk.CTkFont(size=11), text_color="gray").pack(pady=(0, 10))
+
+        frame = ctk.CTkScrollableFrame(win, fg_color="transparent")
+        frame.pack(fill="both", expand=True, padx=16)
+
+        tags = get_tags_help()
+        for tag, desc in tags.items():
+            row = ctk.CTkFrame(frame, fg_color=("gray90", "gray20"),
+                               corner_radius=6)
+            row.pack(fill="x", pady=3)
+            ctk.CTkLabel(row, text=f"[{tag}]",
+                         font=ctk.CTkFont(size=12, family="Courier"),
+                         text_color=ACCENT, anchor="w").pack(
+                side="left", padx=10, pady=6)
+            ctk.CTkLabel(row, text=desc,
+                         font=ctk.CTkFont(size=11), text_color="gray",
+                         anchor="e").pack(side="right", padx=10)
+
+        ctk.CTkButton(win, text="Chiudi", command=win.destroy,
+                      fg_color=ACCENT, hover_color=ACCENT_D).pack(pady=12)
+
     # ── XTTS helpers ──────────────────────────────────────────────────────
 
     def _on_lang_change(self, value: str):
@@ -522,16 +581,34 @@ class VocalTextApp(ctk.CTk):
                                 text="⏳  Generazione in corso…")
         self._hide_error()
 
-        self.engine.generate(
-            text=text,
-            voice=self._voice,
-            speed=self._speed.get(),
-            volume=self._volume.get(),
-            language=self._lang.get(),
-            reference_wav=self._ref_wav,
-            on_done=lambda p: self.after(0, lambda: self._on_audio_ready(p)),
-            on_error=lambda e: self.after(0, lambda: self._on_gen_error(e)),
-        )
+        from app.audio.effects import has_tags, build_audio
+
+        if has_tags(text):
+            # Pipeline con effetti inline
+            build_audio(
+                text=text,
+                voice=self._voice,
+                engine=self.engine,
+                speed=self._speed.get(),
+                volume=self._volume.get(),
+                language=self._lang.get(),
+                reference_wav=self._ref_wav,
+                polish=self._polish.get(),
+                on_done=lambda p: self.after(0, lambda: self._on_audio_ready(p)),
+                on_error=lambda e: self.after(0, lambda: self._on_gen_error(e)),
+            )
+        else:
+            self.engine.generate(
+                text=text,
+                voice=self._voice,
+                speed=self._speed.get(),
+                volume=self._volume.get(),
+                language=self._lang.get(),
+                reference_wav=self._ref_wav,
+                polish=self._polish.get(),
+                on_done=lambda p: self.after(0, lambda: self._on_audio_ready(p)),
+                on_error=lambda e: self.after(0, lambda: self._on_gen_error(e)),
+            )
 
     def _on_audio_ready(self, path: str):
         self._audio_path = path
