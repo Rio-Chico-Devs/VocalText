@@ -50,6 +50,11 @@ class VocalTextApp(ctk.CTk):
         self._audio_path: str | None = None
         self._voice_rows: dict[str, ctk.CTkFrame] = {}
 
+        # Selezione audio per editing
+        self._sel_start: float | None = None   # secondi
+        self._sel_end:   float | None = None   # secondi
+        self._sel_drag_x0: int | None = None   # pixel pressione iniziale
+
         self._build()
         self.after(120, self._load_voices)
         self.after(120, self._check_engine)
@@ -273,14 +278,23 @@ class VocalTextApp(ctk.CTk):
         self._build_player(self._player_card)
 
     def _build_player(self, parent):
+        # Istruzione selezione
+        ctk.CTkLabel(
+            parent,
+            text="Trascina sulla forma d'onda per selezionare una regione",
+            font=ctk.CTkFont(size=10), text_color="gray").grid(
+            row=0, column=0, sticky="w", padx=12, pady=(8, 0))
+
         self._wave_canvas = tk.Canvas(
-            parent, height=56, bg="#1d2335",
-            highlightthickness=0, cursor="hand2")
-        self._wave_canvas.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 0))
-        self._wave_canvas.bind("<Button-1>", self._seek_click)
+            parent, height=64, bg="#1d2335",
+            highlightthickness=0, cursor="crosshair")
+        self._wave_canvas.grid(row=1, column=0, sticky="ew", padx=10, pady=(2, 0))
+        self._wave_canvas.bind("<Button-1>",        self._sel_press)
+        self._wave_canvas.bind("<B1-Motion>",       self._sel_motion)
+        self._wave_canvas.bind("<ButtonRelease-1>", self._sel_release)
 
         ctrl = ctk.CTkFrame(parent, fg_color="transparent")
-        ctrl.grid(row=1, column=0, sticky="ew", padx=10, pady=6)
+        ctrl.grid(row=2, column=0, sticky="ew", padx=10, pady=6)
         ctrl.grid_columnconfigure(2, weight=1)
 
         self._play_btn = ctk.CTkButton(
@@ -315,8 +329,42 @@ class VocalTextApp(ctk.CTk):
                              self.player.play())).grid(
             row=0, column=4, padx=(6, 0))
 
+        # ── Barra editing (visibile solo con selezione attiva) ──
+        self._edit_bar = ctk.CTkFrame(parent, fg_color="transparent")
+        self._edit_bar.grid(row=3, column=0, sticky="ew", padx=10, pady=(0, 4))
+        self._edit_bar.grid_remove()
+
+        ctk.CTkLabel(self._edit_bar, text="Selezione:",
+                     font=ctk.CTkFont(size=11), text_color="gray").pack(side="left")
+        self._sel_lbl = ctk.CTkLabel(
+            self._edit_bar, text="",
+            font=ctk.CTkFont(size=11, family="monospace"),
+            text_color=ACCENT)
+        self._sel_lbl.pack(side="left", padx=(4, 12))
+
+        ctk.CTkButton(
+            self._edit_bar, text="✂  Elimina selezione",
+            height=28, width=160,
+            fg_color=DANGER, hover_color="#cc4444", text_color="white",
+            font=ctk.CTkFont(size=11),
+            command=self._edit_delete).pack(side="left", padx=(0, 6))
+
+        ctk.CTkButton(
+            self._edit_bar, text="✂  Ritaglia",
+            height=28, width=100,
+            fg_color="transparent", border_width=1,
+            font=ctk.CTkFont(size=11),
+            command=self._edit_crop).pack(side="left", padx=(0, 6))
+
+        ctk.CTkButton(
+            self._edit_bar, text="✕",
+            height=28, width=32,
+            fg_color="transparent", border_width=1,
+            font=ctk.CTkFont(size=11),
+            command=self._edit_clear_sel).pack(side="left")
+
         exp = ctk.CTkFrame(parent, fg_color="transparent")
-        exp.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 10))
+        exp.grid(row=4, column=0, sticky="ew", padx=10, pady=(0, 10))
         ctk.CTkButton(
             exp, text="⬇  Salva WAV", width=120, height=30,
             fg_color="transparent", border_width=1,
@@ -617,6 +665,7 @@ class VocalTextApp(ctk.CTk):
         self._time_tot.configure(text=_fmt_time(duration))
         self._dur_lbl.configure(text=f"{_fmt_time(duration)} · WAV")
         self._draw_waveform(path)
+        self._edit_clear_sel()
         self._player_card.grid()
         self.player.play(on_end=lambda: self.after(0, self._on_play_end))
         self._play_btn.configure(text="⏸")
@@ -654,16 +703,143 @@ class VocalTextApp(ctk.CTk):
         self._time_cur.configure(text=_fmt_time(secs))
         self._update_playhead(secs)
 
-    def _seek_click(self, event):
+    def _seek_to_x(self, x: int):
+        """Porta la riproduzione alla posizione x (pixel) sulla forma d'onda."""
         w = self._wave_canvas.winfo_width()
         if w <= 0:
             return
-        pct  = max(0.0, min(event.x / w, 1.0))
+        pct  = max(0.0, min(x / w, 1.0))
         secs = pct * self.player.duration
         self.player.seek(secs)
-        self.player.play(
-            on_end=lambda: self.after(0, self._on_play_end))
+        self.player.play(on_end=lambda: self.after(0, self._on_play_end))
         self._play_btn.configure(text="⏸")
+
+    # ── Selezione waveform ─────────────────────────────────────────────────
+
+    def _sel_press(self, event):
+        """Inizio click: segna la posizione iniziale, cancella selezione precedente."""
+        self._sel_drag_x0 = event.x
+        self._sel_start = None
+        self._sel_end   = None
+        self._wave_canvas.delete("selection")
+        self._edit_bar.grid_remove()
+
+    def _sel_motion(self, event):
+        """Trascinamento: disegna il rettangolo di selezione in tempo reale."""
+        if self._sel_drag_x0 is None or not self.player.duration:
+            return
+        x0, x1 = self._sel_drag_x0, event.x
+        xa, xb = min(x0, x1), max(x0, x1)
+        if xb - xa < 3:
+            return
+        H = self._wave_canvas.winfo_height() or 64
+        self._wave_canvas.delete("selection")
+        # Rettangolo semitrasparente (stipple = tratteggio tk)
+        self._wave_canvas.create_rectangle(
+            xa, 0, xb, H,
+            fill=ACCENT, stipple="gray25",
+            outline=ACCENT, width=1, tags="selection")
+        # Linee di bordo solide
+        self._wave_canvas.create_line(xa, 0, xa, H,
+                                      fill=ACCENT, width=2, tags="selection")
+        self._wave_canvas.create_line(xb, 0, xb, H,
+                                      fill=ACCENT, width=2, tags="selection")
+
+    def _sel_release(self, event):
+        """Fine click/trascinamento: decide se fare seek o finalizzare selezione."""
+        if self._sel_drag_x0 is None:
+            return
+        dx = abs(event.x - self._sel_drag_x0)
+        if dx < 6 or not self.player.duration:
+            # Click semplice → seek
+            self._wave_canvas.delete("selection")
+            self._edit_bar.grid_remove()
+            self._sel_drag_x0 = None
+            self._seek_to_x(event.x)
+            return
+
+        # Trascino → selezione
+        w  = self._wave_canvas.winfo_width()
+        x0 = self._sel_drag_x0
+        x1 = event.x
+        xa, xb = min(x0, x1), max(x0, x1)
+        dur = self.player.duration
+        self._sel_start = max(0.0, (xa / w) * dur)
+        self._sel_end   = min(dur,  (xb / w) * dur)
+        self._sel_drag_x0 = None
+
+        self._sel_lbl.configure(
+            text=f"{_fmt_time(self._sel_start)} → {_fmt_time(self._sel_end)}"
+                 f"  ({_fmt_time(self._sel_end - self._sel_start)})")
+        self._edit_bar.grid()
+
+    def _edit_clear_sel(self):
+        """Cancella la selezione corrente."""
+        self._sel_start = None
+        self._sel_end   = None
+        self._wave_canvas.delete("selection")
+        self._edit_bar.grid_remove()
+
+    # ── Operazioni di editing ──────────────────────────────────────────────
+
+    def _edit_delete(self):
+        """Elimina la regione selezionata dall'audio."""
+        if self._sel_start is None or not self._audio_path:
+            return
+        self._apply_edit("delete")
+
+    def _edit_crop(self):
+        """Mantiene solo la regione selezionata."""
+        if self._sel_start is None or not self._audio_path:
+            return
+        self._apply_edit("crop")
+
+    def _apply_edit(self, mode: str):
+        import struct as _struct
+        path = self._audio_path
+        try:
+            with wave.open(path, "rb") as wf:
+                n_ch  = wf.getnchannels()
+                sw    = wf.getsampwidth()
+                sr    = wf.getframerate()
+                n_fr  = wf.getnframes()
+                raw   = wf.readframes(n_fr)
+
+            fmt = {1: "b", 2: "h", 4: "i"}.get(sw, "h")
+            all_samples = list(_struct.unpack(f"<{n_fr * n_ch}{fmt}", raw))
+
+            s_start = int(self._sel_start * sr) * n_ch
+            s_end   = int(self._sel_end   * sr) * n_ch
+            s_start = max(0, min(s_start, len(all_samples)))
+            s_end   = max(0, min(s_end,   len(all_samples)))
+
+            if mode == "delete":
+                result = all_samples[:s_start] + all_samples[s_end:]
+            else:  # crop
+                result = all_samples[s_start:s_end]
+
+            if not result:
+                self._show_error("La modifica produrrebbe un file vuoto.")
+                return
+
+            packed = _struct.pack(f"<{len(result)}{fmt}", *result)
+            with wave.open(path, "wb") as wf:
+                wf.setnchannels(n_ch)
+                wf.setsampwidth(sw)
+                wf.setframerate(sr)
+                wf.writeframes(packed)
+
+            # Ricarica player e forma d'onda
+            self.player.stop()
+            duration = self.player.load(path)
+            self._time_tot.configure(text=_fmt_time(duration))
+            self._dur_lbl.configure(text=f"{_fmt_time(duration)} · WAV")
+            self._draw_waveform(path)
+            self._edit_clear_sel()
+            self._hide_error()
+
+        except Exception as exc:
+            self._show_error(f"Errore editing: {exc}")
 
     def _tick(self):
         if self.player.is_playing and self.player.duration > 0:
