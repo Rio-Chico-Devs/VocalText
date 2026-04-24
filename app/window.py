@@ -55,6 +55,10 @@ class VocalTextApp(ctk.CTk):
         self._sel_end:   float | None = None   # secondi
         self._sel_drag_x0: int | None = None   # pixel pressione iniziale
 
+        # Editing non-distruttivo: backup dell'originale finché non confermato
+        self._audio_original: str | None = None   # path originale prima dell'edit
+        self._edit_pending = False                 # c'è un edit non ancora confermato
+
         self._build()
         self.after(120, self._load_voices)
         self.after(120, self._check_engine)
@@ -363,12 +367,39 @@ class VocalTextApp(ctk.CTk):
             font=ctk.CTkFont(size=11),
             command=self._edit_clear_sel).pack(side="left")
 
-        exp = ctk.CTkFrame(parent, fg_color="transparent")
-        exp.grid(row=4, column=0, sticky="ew", padx=10, pady=(0, 10))
+        # ── Barra conferma edit (visibile dopo ogni modifica) ──
+        self._confirm_bar = ctk.CTkFrame(parent, fg_color=("gray90", "#1e2a1e"),
+                                         corner_radius=6)
+        self._confirm_bar.grid(row=4, column=0, sticky="ew", padx=10, pady=(0, 4))
+        self._confirm_bar.grid_remove()
+
+        ctk.CTkLabel(self._confirm_bar,
+                     text="Anteprima modifica — ascolta e poi scegli:",
+                     font=ctk.CTkFont(size=11), text_color=WARN).pack(
+            side="left", padx=(10, 12), pady=6)
+
         ctk.CTkButton(
-            exp, text="⬇  Salva WAV", width=120, height=30,
-            fg_color="transparent", border_width=1,
-            command=self._export_wav).pack(side="left")
+            self._confirm_bar, text="✓  Conferma",
+            height=28, width=110,
+            fg_color=ACCENT, hover_color=ACCENT_D, text_color="#0a1810",
+            font=ctk.CTkFont(size=11),
+            command=self._confirm_edit).pack(side="left", padx=(0, 6))
+
+        ctk.CTkButton(
+            self._confirm_bar, text="↩  Annulla",
+            height=28, width=90,
+            fg_color="transparent", border_width=1, text_color=WARN,
+            font=ctk.CTkFont(size=11),
+            command=self._undo_edit).pack(side="left")
+
+        # ── Footer: export + info durata ──
+        exp = ctk.CTkFrame(parent, fg_color="transparent")
+        exp.grid(row=5, column=0, sticky="ew", padx=10, pady=(0, 10))
+        ctk.CTkButton(
+            exp, text="Esporta…", width=100, height=30,
+            fg_color=ACCENT, hover_color=ACCENT_D, text_color="#0a1810",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self._show_export_dialog).pack(side="left")
         self._dur_lbl = ctk.CTkLabel(
             exp, text="", font=ctk.CTkFont(size=11), text_color="gray")
         self._dur_lbl.pack(side="right")
@@ -660,6 +691,9 @@ class VocalTextApp(ctk.CTk):
 
     def _on_audio_ready(self, path: str):
         self._audio_path = path
+        self._audio_original = None
+        self._edit_pending   = False
+        self._confirm_bar.grid_remove()
         self._gen_btn.configure(state="normal", text="▶  Genera Audio")
         duration = self.player.load(path)
         self._time_tot.configure(text=_fmt_time(duration))
@@ -795,18 +829,18 @@ class VocalTextApp(ctk.CTk):
         self._apply_edit("crop")
 
     def _apply_edit(self, mode: str):
-        import struct as _struct
+        import tempfile
         path = self._audio_path
         try:
             with wave.open(path, "rb") as wf:
-                n_ch  = wf.getnchannels()
-                sw    = wf.getsampwidth()
-                sr    = wf.getframerate()
-                n_fr  = wf.getnframes()
-                raw   = wf.readframes(n_fr)
+                n_ch = wf.getnchannels()
+                sw   = wf.getsampwidth()
+                sr   = wf.getframerate()
+                n_fr = wf.getnframes()
+                raw  = wf.readframes(n_fr)
 
             fmt = {1: "b", 2: "h", 4: "i"}.get(sw, "h")
-            all_samples = list(_struct.unpack(f"<{n_fr * n_ch}{fmt}", raw))
+            all_samples = list(struct.unpack(f"<{n_fr * n_ch}{fmt}", raw))
 
             s_start = int(self._sel_start * sr) * n_ch
             s_end   = int(self._sel_end   * sr) * n_ch
@@ -822,24 +856,78 @@ class VocalTextApp(ctk.CTk):
                 self._show_error("La modifica produrrebbe un file vuoto.")
                 return
 
-            packed = _struct.pack(f"<{len(result)}{fmt}", *result)
-            with wave.open(path, "wb") as wf:
+            # Scrivi in un file TEMPORANEO — non tocca l'originale
+            fd, tmp = tempfile.mkstemp(suffix=".wav", prefix="vt_edit_")
+            os.close(fd)
+            packed = struct.pack(f"<{len(result)}{fmt}", *result)
+            with wave.open(tmp, "wb") as wf:
                 wf.setnchannels(n_ch)
                 wf.setsampwidth(sw)
                 wf.setframerate(sr)
                 wf.writeframes(packed)
 
-            # Ricarica player e forma d'onda
+            # Prima modifica: salva backup dell'originale
+            if not self._edit_pending:
+                self._audio_original = path
+                self._edit_pending   = True
+
+            # Swap a temp e riproduci subito
+            self._audio_path = tmp
             self.player.stop()
-            duration = self.player.load(path)
+            duration = self.player.load(tmp)
             self._time_tot.configure(text=_fmt_time(duration))
-            self._dur_lbl.configure(text=f"{_fmt_time(duration)} · WAV")
-            self._draw_waveform(path)
+            label_mode = "eliminata selezione" if mode == "delete" else "ritagliato"
+            self._dur_lbl.configure(
+                text=f"{_fmt_time(duration)} · WAV ({label_mode})")
+            self._draw_waveform(tmp)
             self._edit_clear_sel()
+            self._confirm_bar.grid()
             self._hide_error()
+            self.player.play(on_end=lambda: self.after(0, self._on_play_end))
+            self._play_btn.configure(text="⏸")
 
         except Exception as exc:
             self._show_error(f"Errore editing: {exc}")
+
+    def _confirm_edit(self):
+        """Conferma la modifica: il file temp diventa il nuovo audio corrente."""
+        if not self._edit_pending:
+            return
+        # Se l'originale era già un temp, possiamo eliminarlo
+        if self._audio_original and self._audio_original != self._audio_path:
+            try:
+                os.unlink(self._audio_original)
+            except Exception:
+                pass
+        self._audio_original = None
+        self._edit_pending   = False
+        self._confirm_bar.grid_remove()
+        dur = self.player.duration or 0
+        self._dur_lbl.configure(text=f"{_fmt_time(dur)} · WAV")
+
+    def _undo_edit(self):
+        """Annulla la modifica: ripristina l'audio originale."""
+        if not self._edit_pending or not self._audio_original:
+            self._confirm_bar.grid_remove()
+            return
+        # Elimina il file di edit temporaneo
+        if self._audio_path and self._audio_path != self._audio_original:
+            try:
+                os.unlink(self._audio_path)
+            except Exception:
+                pass
+        self._audio_path     = self._audio_original
+        self._audio_original = None
+        self._edit_pending   = False
+        self._confirm_bar.grid_remove()
+        self.player.stop()
+        duration = self.player.load(self._audio_path)
+        self._time_tot.configure(text=_fmt_time(duration))
+        self._dur_lbl.configure(text=f"{_fmt_time(duration)} · WAV")
+        self._draw_waveform(self._audio_path)
+        self._edit_clear_sel()
+        self.player.play(on_end=lambda: self.after(0, self._on_play_end))
+        self._play_btn.configure(text="⏸")
 
     def _tick(self):
         if self.player.is_playing and self.player.duration > 0:
@@ -908,18 +996,168 @@ class VocalTextApp(ctk.CTk):
     #  Export
     # ══════════════════════════════════════════════════════════════════════
 
-    def _export_wav(self):
+    def _show_export_dialog(self):
         if not self._audio_path:
             return
-        name = self._voice.name if self._voice else "output"
-        dest = filedialog.asksaveasfilename(
-            title="Salva traccia audio",
-            defaultextension=".wav",
-            filetypes=[("WAV audio", "*.wav"), ("Tutti i file", "*.*")],
-            initialfile=f"VocalText_{name}.wav")
-        if dest:
-            import shutil
-            shutil.copy2(self._audio_path, dest)
+        import shutil as _shutil
+
+        ffmpeg = _shutil.which("ffmpeg")
+
+        win = ctk.CTkToplevel(self)
+        win.title("Esporta audio")
+        win.geometry("440x400")
+        win.resizable(False, False)
+        win.grab_set()
+
+        ctk.CTkLabel(win, text="Esporta Audio",
+                     font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(18, 2))
+
+        if not ffmpeg:
+            ctk.CTkLabel(win,
+                         text="FFmpeg non trovato — solo WAV disponibile.\n"
+                              "Installa FFmpeg e aggiungi al PATH per MP3/Opus.",
+                         font=ctk.CTkFont(size=11), text_color="gray",
+                         justify="center").pack(pady=(2, 8))
+        else:
+            ctk.CTkLabel(win, text="FFmpeg trovato — tutti i formati disponibili.",
+                         font=ctk.CTkFont(size=11), text_color=ACCENT).pack(pady=(2, 8))
+
+        # ── Formato ──
+        ctk.CTkLabel(win, text="FORMATO",
+                     font=ctk.CTkFont(size=10, weight="bold"),
+                     text_color="gray").pack(anchor="w", padx=24)
+
+        fmt_var = tk.StringVar(value="wav")
+        fmt_frame = ctk.CTkFrame(win, fg_color="transparent")
+        fmt_frame.pack(fill="x", padx=24, pady=(4, 12))
+
+        formats = [
+            ("WAV   – Lossless, massima fedeltà",           "wav",  True),
+            ("MP3   – Compresso, compatibile ovunque",       "mp3",  bool(ffmpeg)),
+            ("Opus  – Compresso, ottimale per web/voce",     "opus", bool(ffmpeg)),
+        ]
+        for label, val, enabled in formats:
+            ctk.CTkRadioButton(
+                fmt_frame, text=label, variable=fmt_var, value=val,
+                state="normal" if enabled else "disabled",
+                fg_color=ACCENT, hover_color=ACCENT_D,
+                font=ctk.CTkFont(size=12),
+            ).pack(anchor="w", pady=3)
+
+        # ── Qualità (rilevante solo per MP3/Opus) ──
+        ctk.CTkLabel(win, text="QUALITÀ  (per MP3/Opus)",
+                     font=ctk.CTkFont(size=10, weight="bold"),
+                     text_color="gray").pack(anchor="w", padx=24)
+
+        quality_var = tk.StringVar(value="web")
+        q_frame = ctk.CTkFrame(win, fg_color="transparent")
+        q_frame.pack(fill="x", padx=24, pady=(4, 16))
+
+        qualities = [
+            ("Web ready      – voce leggera, ~32 kbps, piccolo", "web"),
+            ("Qualità alta   – bilanciato, ~96 kbps",             "high"),
+            ("Massima        – 320 kbps / lossless",              "max"),
+        ]
+        for label, val in qualities:
+            ctk.CTkRadioButton(
+                q_frame, text=label, variable=quality_var, value=val,
+                fg_color=ACCENT, hover_color=ACCENT_D,
+                font=ctk.CTkFont(size=12),
+            ).pack(anchor="w", pady=2)
+
+        # ── Bottoni ──
+        def do_export():
+            fmt     = fmt_var.get()
+            quality = quality_var.get()
+            name    = self._voice.name if self._voice else "output"
+            exts    = {"wav": ".wav", "mp3": ".mp3", "opus": ".opus"}
+            ext     = exts[fmt]
+            filetypes = {
+                "wav":  [("WAV audio",  "*.wav")],
+                "mp3":  [("MP3 audio",  "*.mp3")],
+                "opus": [("Opus audio", "*.opus")],
+            }
+            dest = filedialog.asksaveasfilename(
+                title="Salva come",
+                defaultextension=ext,
+                filetypes=filetypes[fmt] + [("Tutti i file", "*.*")],
+                initialfile=f"VocalText_{name}{ext}")
+            if not dest:
+                return
+            win.destroy()
+            self._do_export(fmt, quality, dest)
+
+        ctk.CTkButton(
+            win, text="Scegli destinazione ed Esporta",
+            height=40, fg_color=ACCENT, hover_color=ACCENT_D,
+            text_color="#0a1810",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            command=do_export).pack(fill="x", padx=24, pady=(0, 8))
+
+        ctk.CTkButton(
+            win, text="Annulla", height=30,
+            fg_color="transparent", border_width=1,
+            command=win.destroy).pack(fill="x", padx=24)
+
+    def _do_export(self, fmt: str, quality: str, dest: str):
+        """Esegue la conversione (in thread separato per MP3/Opus)."""
+        import shutil, subprocess
+        src = self._audio_path
+
+        if fmt == "wav":
+            try:
+                shutil.copy2(src, dest)
+                size_kb = os.path.getsize(dest) / 1024
+                self._show_error(
+                    f"Salvato: {os.path.basename(dest)}  ({size_kb:.0f} KB)",
+                    color=ACCENT)
+            except Exception as exc:
+                self._show_error(f"Errore salvataggio: {exc}")
+            return
+
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            self._show_error(
+                "FFmpeg non trovato nel PATH. "
+                "Scarica ffmpeg.org e aggiungilo al PATH di sistema.")
+            return
+
+        # Costruisce il comando FFmpeg in base a formato + qualità
+        cmd = [ffmpeg, "-y", "-i", src]
+
+        if fmt == "mp3":
+            q_map = {"max": "0", "high": "2", "web": "7"}
+            q = q_map.get(quality, "4")
+            cmd += ["-codec:a", "libmp3lame", "-q:a", q]
+            if quality == "web":
+                cmd += ["-ac", "1", "-ar", "22050"]
+        elif fmt == "opus":
+            br_map = {"max": "128k", "high": "64k", "web": "32k"}
+            br = br_map.get(quality, "48k")
+            cmd += ["-codec:a", "libopus", "-b:a", br, "-ac", "1", "-ar", "48000"]
+            if quality == "web":
+                cmd += ["-application", "voip"]
+
+        cmd.append(dest)
+
+        def _run():
+            try:
+                result = subprocess.run(cmd, capture_output=True, timeout=120)
+                if result.returncode == 0 and os.path.exists(dest):
+                    size_kb = os.path.getsize(dest) / 1024
+                    self.after(0, lambda: self._show_error(
+                        f"Esportato: {os.path.basename(dest)}  ({size_kb:.0f} KB)",
+                        color=ACCENT))
+                else:
+                    err = result.stderr.decode(errors="replace")[-300:]
+                    self.after(0, lambda: self._show_error(
+                        f"Errore FFmpeg: {err}"))
+            except Exception as exc:
+                self.after(0, lambda: self._show_error(
+                    f"Errore esportazione: {exc}"))
+
+        self._show_error("Esportazione in corso…", color=WARN)
+        threading.Thread(target=_run, daemon=True).start()
 
     # ══════════════════════════════════════════════════════════════════════
     #  Helpers
