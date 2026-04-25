@@ -404,6 +404,14 @@ class VocalTextApp(ctk.CTk):
             command=self._clean_voice)
         self._clean_btn.pack(side="left", padx=(0, 6))
 
+        self._speed_btn = ctk.CTkButton(
+            exp, text="⏱ Velocità", width=110, height=30,
+            fg_color="transparent", border_width=1,
+            text_color=ACCENT,
+            font=ctk.CTkFont(size=12),
+            command=self._show_speed_dialog)
+        self._speed_btn.pack(side="left", padx=(0, 6))
+
         ctk.CTkButton(
             exp, text="Esporta…", width=100, height=30,
             fg_color=ACCENT, hover_color=ACCENT_D, text_color="#0a1810",
@@ -1003,6 +1011,135 @@ class VocalTextApp(ctk.CTk):
         except Exception:
             pass
         self._show_error(f"Errore pulizia voce: {msg}")
+
+    # ── Cambio velocità (pitch preservato) ─────────────────────────────────────
+
+    def _show_speed_dialog(self):
+        """Dialog con slider 0.5x – 2.0x. Applica time-stretch pitch-preserving."""
+        if not self._audio_path:
+            return
+
+        win = ctk.CTkToplevel(self)
+        win.title("Cambia velocità")
+        win.geometry("380x230")
+        win.resizable(False, False)
+        win.grab_set()
+
+        ctk.CTkLabel(win, text="Cambia velocità",
+                     font=ctk.CTkFont(size=15, weight="bold")).pack(pady=(16, 2))
+        ctk.CTkLabel(win, text="L'intonazione viene preservata.",
+                     font=ctk.CTkFont(size=11),
+                     text_color="gray").pack(pady=(0, 10))
+
+        speed_var = tk.DoubleVar(value=1.0)
+        val_lbl = ctk.CTkLabel(
+            win, text="1.00×",
+            font=ctk.CTkFont(size=22, weight="bold"),
+            text_color=ACCENT)
+        val_lbl.pack(pady=(0, 4))
+
+        def _on_change(v):
+            val_lbl.configure(text=f"{float(v):.2f}×")
+
+        slider = ctk.CTkSlider(
+            win, from_=0.50, to=2.00, number_of_steps=150,
+            variable=speed_var, command=_on_change,
+            progress_color=ACCENT, button_color=ACCENT, button_hover_color=ACCENT_D)
+        slider.pack(fill="x", padx=30, pady=(0, 4))
+
+        # Marker preset cliccabili
+        preset_row = ctk.CTkFrame(win, fg_color="transparent")
+        preset_row.pack(fill="x", padx=30, pady=(0, 12))
+        for label, val in [("0.75×", 0.75), ("1.00×", 1.00),
+                           ("1.25×", 1.25), ("1.50×", 1.50)]:
+            ctk.CTkButton(
+                preset_row, text=label, width=60, height=24,
+                fg_color="transparent", border_width=1,
+                text_color=("gray20", "gray80"),
+                font=ctk.CTkFont(size=10),
+                command=lambda v=val: (speed_var.set(v),
+                                       val_lbl.configure(text=f"{v:.2f}×"))
+            ).pack(side="left", expand=True, padx=2)
+
+        btn_row = ctk.CTkFrame(win, fg_color="transparent")
+        btn_row.pack(fill="x", padx=30, pady=(0, 12))
+
+        def _apply():
+            factor = float(speed_var.get())
+            win.destroy()
+            self._apply_speed(factor)
+
+        ctk.CTkButton(
+            btn_row, text="Applica", height=32,
+            fg_color=ACCENT, hover_color=ACCENT_D, text_color="#0a1810",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=_apply).pack(side="left", expand=True, fill="x", padx=(0, 4))
+        ctk.CTkButton(
+            btn_row, text="Annulla", height=32,
+            fg_color="transparent", border_width=1,
+            command=win.destroy).pack(side="left", expand=True, fill="x", padx=(4, 0))
+
+    def _apply_speed(self, factor: float):
+        """Time-stretch in background, stesso workflow Conferma/Annulla."""
+        if not self._audio_path:
+            return
+        if abs(factor - 1.0) < 0.01:
+            return
+        import tempfile
+        from app.audio.speed import change_speed
+
+        src = self._audio_path
+        fd, tmp = tempfile.mkstemp(suffix=".wav", prefix="vt_speed_")
+        os.close(fd)
+
+        self._speed_btn.configure(state="disabled", text="⏳ Elaborazione…")
+        self._show_error(f"Cambio velocità a {factor:.2f}×…", color=WARN)
+
+        def _run():
+            try:
+                ok = change_speed(src, tmp, factor)
+                self.after(0, lambda: self._on_speed_done(tmp, ok, factor))
+            except Exception as exc:
+                self.after(0, lambda: self._on_speed_error(str(exc), tmp))
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _on_speed_done(self, tmp_path: str, ok: bool, factor: float):
+        self._speed_btn.configure(state="normal", text="⏱ Velocità")
+        if not ok or not os.path.exists(tmp_path):
+            self._show_error(
+                "Cambio velocità non riuscito — l'audio originale non è stato modificato.")
+            try:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+            except Exception:
+                pass
+            return
+
+        if not self._edit_pending:
+            self._audio_original = self._audio_path
+            self._edit_pending   = True
+
+        self._audio_path = tmp_path
+        self.player.stop()
+        duration = self.player.load(tmp_path)
+        self._time_tot.configure(text=_fmt_time(duration))
+        self._dur_lbl.configure(text=f"{_fmt_time(duration)} · WAV ({factor:.2f}×)")
+        self._draw_waveform(tmp_path)
+        self._edit_clear_sel()
+        self._confirm_bar.grid()
+        self._hide_error()
+        self.player.play(on_end=lambda: self.after(0, self._on_play_end))
+        self._play_btn.configure(text="⏸")
+
+    def _on_speed_error(self, msg: str, tmp_path: str):
+        self._speed_btn.configure(state="normal", text="⏱ Velocità")
+        try:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+        except Exception:
+            pass
+        self._show_error(f"Errore cambio velocità: {msg}")
 
     def _tick(self):
         if self.player.is_playing and self.player.duration > 0:
