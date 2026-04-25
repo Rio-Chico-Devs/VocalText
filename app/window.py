@@ -1098,6 +1098,30 @@ class VocalTextApp(ctk.CTk):
             return False
 
     @staticmethod
+    def _has_soundfile_ogg() -> bool:
+        """True se soundfile è installato e supporta OGG (Vorbis o Opus)."""
+        try:
+            import soundfile as sf
+            subtypes = sf.available_subtypes("OGG")
+            return bool(subtypes)  # Vorbis è sempre presente se OGG supportato
+        except Exception:
+            return False
+
+    @staticmethod
+    def _soundfile_ogg_subtype() -> str:
+        """Restituisce 'OPUS' se disponibile, altrimenti 'VORBIS'."""
+        try:
+            import soundfile as sf
+            subtypes = sf.available_subtypes("OGG")
+            if "OPUS" in subtypes:
+                return "OPUS"
+            if "VORBIS" in subtypes:
+                return "VORBIS"
+        except Exception:
+            pass
+        return "VORBIS"
+
+    @staticmethod
     def _has_soundfile_opus() -> bool:
         """soundfile (libsndfile) supporta Opus dalla 1.0.29 / soundfile 0.12+."""
         try:
@@ -1112,7 +1136,7 @@ class VocalTextApp(ctk.CTk):
 
         ffmpeg    = self._find_ffmpeg()
         has_mp3   = self._has_lameenc() or bool(ffmpeg)
-        has_opus  = self._has_soundfile_opus() or bool(ffmpeg)
+        has_ogg   = self._has_soundfile_ogg() or bool(ffmpeg)
 
         win = ctk.CTkToplevel(self)
         win.title("Esporta audio")
@@ -1132,18 +1156,20 @@ class VocalTextApp(ctk.CTk):
             mp3_note = "MP3 non disponibile — esegui: pip install lameenc"
 
         if self._has_soundfile_opus():
-            opus_note = "Opus disponibile (soundfile)"
+            ogg_note = "OGG/Opus disponibile (soundfile)"
+        elif self._has_soundfile_ogg():
+            ogg_note = "OGG/Vorbis disponibile (soundfile)"
         elif ffmpeg:
-            opus_note = "Opus disponibile (FFmpeg)"
+            ogg_note = "OGG/Opus disponibile (FFmpeg)"
         else:
-            opus_note = "Opus non disponibile — esegui: pip install soundfile"
+            ogg_note = "OGG non disponibile — esegui: pip install soundfile"
 
         ctk.CTkLabel(win, text=f"● {mp3_note}",
                      font=ctk.CTkFont(size=11),
                      text_color=ACCENT if has_mp3 else "gray").pack(anchor="w", padx=24)
-        ctk.CTkLabel(win, text=f"● {opus_note}",
+        ctk.CTkLabel(win, text=f"● {ogg_note}",
                      font=ctk.CTkFont(size=11),
-                     text_color=ACCENT if has_opus else "gray").pack(anchor="w", padx=24, pady=(0, 8))
+                     text_color=ACCENT if has_ogg else "gray").pack(anchor="w", padx=24, pady=(0, 8))
 
         # ── Formato ──
         ctk.CTkLabel(win, text="FORMATO",
@@ -1155,9 +1181,9 @@ class VocalTextApp(ctk.CTk):
         fmt_frame.pack(fill="x", padx=24, pady=(4, 10))
 
         formats = [
-            ("WAV   – Lossless, massima fedeltà",       "wav",  True),
-            ("MP3   – Compresso, compatibile ovunque",   "mp3",  has_mp3),
-            ("Opus  – Compresso, ottimale web/voce",     "opus", has_opus),
+            ("WAV   – Lossless, massima fedeltà",        "wav", True),
+            ("MP3   – Compresso, compatibile ovunque",    "mp3", has_mp3),
+            ("OGG   – Compresso, ottimale web/voce",      "ogg", has_ogg),
         ]
         for label, val, enabled in formats:
             ctk.CTkRadioButton(
@@ -1168,7 +1194,7 @@ class VocalTextApp(ctk.CTk):
             ).pack(anchor="w", pady=3)
 
         # ── Qualità ──
-        ctk.CTkLabel(win, text="QUALITÀ  (per MP3/Opus)",
+        ctk.CTkLabel(win, text="QUALITÀ  (per MP3/OGG)",
                      font=ctk.CTkFont(size=10, weight="bold"),
                      text_color="gray").pack(anchor="w", padx=24)
 
@@ -1191,7 +1217,7 @@ class VocalTextApp(ctk.CTk):
             fmt     = fmt_var.get()
             quality = quality_var.get()
             name    = self._voice.name if self._voice else "output"
-            ext     = {"wav": ".wav", "mp3": ".mp3", "opus": ".opus"}[fmt]
+            ext     = {"wav": ".wav", "mp3": ".mp3", "ogg": ".ogg"}[fmt]
             dest = filedialog.asksaveasfilename(
                 title="Salva come",
                 defaultextension=ext,
@@ -1239,26 +1265,26 @@ class VocalTextApp(ctk.CTk):
         ).start()
 
     def _export_worker(self, fmt: str, quality: str, src: str, dest: str):
-        """Thread worker per conversione MP3/Opus."""
+        """Thread worker per conversione MP3/OGG."""
         import subprocess
         try:
             if fmt == "mp3" and self._has_lameenc():
                 self._export_mp3_lameenc(src, dest, quality)
-            elif fmt == "opus" and self._has_soundfile_opus():
-                self._export_opus_soundfile(src, dest, quality)
+            elif fmt == "ogg" and self._has_soundfile_ogg():
+                self._export_ogg_soundfile(src, dest, quality)
             else:
                 ffmpeg = self._find_ffmpeg()
                 if not ffmpeg:
                     msg = ("Esporta MP3: installa lameenc."
                            if fmt == "mp3"
-                           else "Esporta Opus: installa soundfile.")
+                           else "Esporta OGG: installa soundfile (pip install soundfile).")
                     self.after(0, lambda m=msg: self._show_error(m))
                     return
                 cmd = [ffmpeg, "-y", "-i", src]
                 if fmt == "mp3":
                     q_map = {"max": "0", "high": "2", "web": "5"}
                     cmd += ["-codec:a", "libmp3lame", "-q:a", q_map.get(quality, "3")]
-                elif fmt == "opus":
+                elif fmt == "ogg":
                     br_map = {"max": "128k", "high": "64k", "web": "32k"}
                     cmd += ["-codec:a", "libopus", "-b:a",
                             br_map.get(quality, "48k"),
@@ -1281,12 +1307,11 @@ class VocalTextApp(ctk.CTk):
             self.after(0, lambda: self._show_error(f"Errore esportazione: {exc}"))
 
     @staticmethod
-    def _export_opus_soundfile(src: str, dest: str, quality: str):
+    def _export_ogg_soundfile(src: str, dest: str, quality: str):
         """
-        Encoder Opus tramite libsndfile (via soundfile) — niente FFmpeg.
-        Opus richiede sample rate ∈ {8k,12k,16k,24k,48k}: resampliamo se serve.
-        Bitrate viene scelto da libsndfile in base alla qualità del compression
-        level (range 0..1 → la mappiamo dai preset).
+        Encoder OGG tramite libsndfile (via soundfile) — niente FFmpeg.
+        Tenta Opus (richiede libsndfile ≥ 1.0.29), poi Vorbis come fallback.
+        Opus richiede sample rate ∈ {8k,12k,16k,24k,48k}.
         """
         import soundfile as sf
         import numpy as np
@@ -1295,36 +1320,27 @@ class VocalTextApp(ctk.CTk):
         if data.ndim > 1:
             data = data.mean(axis=1)
 
-        # Resample al sample rate Opus più vicino
-        valid_sr = [48000, 24000, 16000, 12000, 8000]
-        if quality == "web":
-            target_sr = 24000
-        elif quality == "high":
-            target_sr = 48000
-        else:
-            target_sr = 48000
+        subtype = VocalTextApp._soundfile_ogg_subtype()
 
-        # Scegli il sample rate compatibile più vicino al target
-        if sr not in valid_sr:
-            try:
-                from scipy import signal
-                from math import gcd
-                g = gcd(int(sr), target_sr)
-                up   = target_sr // g
-                down = int(sr)  // g
-                data = signal.resample_poly(data, up, down).astype(np.float32)
-                sr = target_sr
-            except Exception:
-                # Senza scipy: usa 48k arrotondando
-                data = data.astype(np.float32)
-                sr = target_sr
+        if subtype == "OPUS":
+            # Opus richiede sample rate specifico
+            valid_sr = [48000, 24000, 16000, 12000, 8000]
+            target_sr = 24000 if quality == "web" else 48000
+            if int(sr) not in valid_sr:
+                try:
+                    from scipy import signal
+                    from math import gcd
+                    g = gcd(int(sr), target_sr)
+                    data = signal.resample_poly(data, target_sr // g, int(sr) // g).astype(np.float32)
+                    sr = target_sr
+                except Exception:
+                    sr = target_sr
 
-        # libsndfile sceglie il bitrate in base al "compression level" (0..1).
-        # 0 = max qualità/bitrate, 1 = min.  Mappiamo dai preset.
+        # compression_level: 0=max qualità, 1=min qualità (Opus e Vorbis)
         level_map = {"max": 0.0, "high": 0.3, "web": 0.7}
         sf.write(
-            dest, data, sr,
-            format="OGG", subtype="OPUS",
+            dest, data, int(sr),
+            format="OGG", subtype=subtype,
             compression_level=level_map.get(quality, 0.5),
         )
 
