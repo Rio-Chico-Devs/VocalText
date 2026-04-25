@@ -996,31 +996,66 @@ class VocalTextApp(ctk.CTk):
     #  Export
     # ══════════════════════════════════════════════════════════════════════
 
+    @staticmethod
+    def _find_ffmpeg() -> str | None:
+        """Cerca FFmpeg nel PATH e nei percorsi comuni di Windows."""
+        import shutil
+        found = shutil.which("ffmpeg")
+        if found:
+            return found
+        common = [
+            r"C:\ffmpeg\bin\ffmpeg.exe",
+            r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
+            r"C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe",
+            r"C:\tools\ffmpeg\bin\ffmpeg.exe",
+        ]
+        for p in common:
+            if os.path.exists(p):
+                return p
+        return None
+
+    @staticmethod
+    def _has_lameenc() -> bool:
+        try:
+            import lameenc  # noqa: F401
+            return True
+        except ImportError:
+            return False
+
     def _show_export_dialog(self):
         if not self._audio_path:
             return
-        import shutil as _shutil
 
-        ffmpeg = _shutil.which("ffmpeg")
+        ffmpeg    = self._find_ffmpeg()
+        has_mp3   = self._has_lameenc() or bool(ffmpeg)
+        has_opus  = bool(ffmpeg)
 
         win = ctk.CTkToplevel(self)
         win.title("Esporta audio")
-        win.geometry("440x400")
+        win.geometry("440x390")
         win.resizable(False, False)
         win.grab_set()
 
         ctk.CTkLabel(win, text="Esporta Audio",
                      font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(18, 2))
 
-        if not ffmpeg:
-            ctk.CTkLabel(win,
-                         text="FFmpeg non trovato — solo WAV disponibile.\n"
-                              "Installa FFmpeg e aggiungi al PATH per MP3/Opus.",
-                         font=ctk.CTkFont(size=11), text_color="gray",
-                         justify="center").pack(pady=(2, 8))
+        # Riga stato dipendenze
+        if self._has_lameenc():
+            mp3_note = "MP3 disponibile (lameenc)"
+        elif ffmpeg:
+            mp3_note = "MP3 disponibile (FFmpeg)"
         else:
-            ctk.CTkLabel(win, text="FFmpeg trovato — tutti i formati disponibili.",
-                         font=ctk.CTkFont(size=11), text_color=ACCENT).pack(pady=(2, 8))
+            mp3_note = "MP3 non disponibile — esegui: pip install lameenc"
+
+        opus_note = "Opus disponibile (FFmpeg)" if ffmpeg else \
+                    "Opus non disponibile — richiede FFmpeg nel PATH"
+
+        ctk.CTkLabel(win, text=f"● {mp3_note}",
+                     font=ctk.CTkFont(size=11),
+                     text_color=ACCENT if has_mp3 else "gray").pack(anchor="w", padx=24)
+        ctk.CTkLabel(win, text=f"● {opus_note}",
+                     font=ctk.CTkFont(size=11),
+                     text_color=ACCENT if has_opus else "gray").pack(anchor="w", padx=24, pady=(0, 8))
 
         # ── Formato ──
         ctk.CTkLabel(win, text="FORMATO",
@@ -1029,12 +1064,12 @@ class VocalTextApp(ctk.CTk):
 
         fmt_var = tk.StringVar(value="wav")
         fmt_frame = ctk.CTkFrame(win, fg_color="transparent")
-        fmt_frame.pack(fill="x", padx=24, pady=(4, 12))
+        fmt_frame.pack(fill="x", padx=24, pady=(4, 10))
 
         formats = [
-            ("WAV   – Lossless, massima fedeltà",           "wav",  True),
-            ("MP3   – Compresso, compatibile ovunque",       "mp3",  bool(ffmpeg)),
-            ("Opus  – Compresso, ottimale per web/voce",     "opus", bool(ffmpeg)),
+            ("WAV   – Lossless, massima fedeltà",       "wav",  True),
+            ("MP3   – Compresso, compatibile ovunque",   "mp3",  has_mp3),
+            ("Opus  – Compresso, ottimale web/voce",     "opus", has_opus),
         ]
         for label, val, enabled in formats:
             ctk.CTkRadioButton(
@@ -1044,43 +1079,36 @@ class VocalTextApp(ctk.CTk):
                 font=ctk.CTkFont(size=12),
             ).pack(anchor="w", pady=3)
 
-        # ── Qualità (rilevante solo per MP3/Opus) ──
+        # ── Qualità ──
         ctk.CTkLabel(win, text="QUALITÀ  (per MP3/Opus)",
                      font=ctk.CTkFont(size=10, weight="bold"),
                      text_color="gray").pack(anchor="w", padx=24)
 
         quality_var = tk.StringVar(value="web")
         q_frame = ctk.CTkFrame(win, fg_color="transparent")
-        q_frame.pack(fill="x", padx=24, pady=(4, 16))
+        q_frame.pack(fill="x", padx=24, pady=(4, 14))
 
-        qualities = [
-            ("Web ready      – voce leggera, ~32 kbps, piccolo", "web"),
-            ("Qualità alta   – bilanciato, ~96 kbps",             "high"),
-            ("Massima        – 320 kbps / lossless",              "max"),
-        ]
-        for label, val in qualities:
+        for label, val in [
+            ("Web ready  – voce leggera ~48 kbps, file piccolo", "web"),
+            ("Alta        – bilanciato ~128 kbps",                "high"),
+            ("Massima    – 320 kbps / lossless",                  "max"),
+        ]:
             ctk.CTkRadioButton(
                 q_frame, text=label, variable=quality_var, value=val,
                 fg_color=ACCENT, hover_color=ACCENT_D,
                 font=ctk.CTkFont(size=12),
             ).pack(anchor="w", pady=2)
 
-        # ── Bottoni ──
         def do_export():
             fmt     = fmt_var.get()
             quality = quality_var.get()
             name    = self._voice.name if self._voice else "output"
-            exts    = {"wav": ".wav", "mp3": ".mp3", "opus": ".opus"}
-            ext     = exts[fmt]
-            filetypes = {
-                "wav":  [("WAV audio",  "*.wav")],
-                "mp3":  [("MP3 audio",  "*.mp3")],
-                "opus": [("Opus audio", "*.opus")],
-            }
+            ext     = {"wav": ".wav", "mp3": ".mp3", "opus": ".opus"}[fmt]
             dest = filedialog.asksaveasfilename(
                 title="Salva come",
                 defaultextension=ext,
-                filetypes=filetypes[fmt] + [("Tutti i file", "*.*")],
+                filetypes=[(fmt.upper() + " audio", f"*{ext}"),
+                           ("Tutti i file", "*.*")],
                 initialfile=f"VocalText_{name}{ext}")
             if not dest:
                 return
@@ -1100,7 +1128,7 @@ class VocalTextApp(ctk.CTk):
             command=win.destroy).pack(fill="x", padx=24)
 
     def _do_export(self, fmt: str, quality: str, dest: str):
-        """Esegue la conversione (in thread separato per MP3/Opus)."""
+        """Esegue la conversione in thread separato."""
         import shutil, subprocess
         src = self._audio_path
 
@@ -1115,49 +1143,97 @@ class VocalTextApp(ctk.CTk):
                 self._show_error(f"Errore salvataggio: {exc}")
             return
 
-        ffmpeg = shutil.which("ffmpeg")
-        if not ffmpeg:
-            self._show_error(
-                "FFmpeg non trovato nel PATH. "
-                "Scarica ffmpeg.org e aggiungilo al PATH di sistema.")
-            return
-
-        # Costruisce il comando FFmpeg in base a formato + qualità
-        cmd = [ffmpeg, "-y", "-i", src]
-
-        if fmt == "mp3":
-            q_map = {"max": "0", "high": "2", "web": "7"}
-            q = q_map.get(quality, "4")
-            cmd += ["-codec:a", "libmp3lame", "-q:a", q]
-            if quality == "web":
-                cmd += ["-ac", "1", "-ar", "22050"]
-        elif fmt == "opus":
-            br_map = {"max": "128k", "high": "64k", "web": "32k"}
-            br = br_map.get(quality, "48k")
-            cmd += ["-codec:a", "libopus", "-b:a", br, "-ac", "1", "-ar", "48000"]
-            if quality == "web":
-                cmd += ["-application", "voip"]
-
-        cmd.append(dest)
-
-        def _run():
-            try:
-                result = subprocess.run(cmd, capture_output=True, timeout=120)
-                if result.returncode == 0 and os.path.exists(dest):
-                    size_kb = os.path.getsize(dest) / 1024
-                    self.after(0, lambda: self._show_error(
-                        f"Esportato: {os.path.basename(dest)}  ({size_kb:.0f} KB)",
-                        color=ACCENT))
-                else:
-                    err = result.stderr.decode(errors="replace")[-300:]
-                    self.after(0, lambda: self._show_error(
-                        f"Errore FFmpeg: {err}"))
-            except Exception as exc:
-                self.after(0, lambda: self._show_error(
-                    f"Errore esportazione: {exc}"))
-
         self._show_error("Esportazione in corso…", color=WARN)
-        threading.Thread(target=_run, daemon=True).start()
+        threading.Thread(
+            target=self._export_worker,
+            args=(fmt, quality, src, dest),
+            daemon=True,
+        ).start()
+
+    def _export_worker(self, fmt: str, quality: str, src: str, dest: str):
+        """Thread worker per conversione MP3/Opus."""
+        import subprocess, shutil
+        try:
+            if fmt == "mp3" and self._has_lameenc():
+                self._export_mp3_lameenc(src, dest, quality)
+            else:
+                ffmpeg = self._find_ffmpeg()
+                if not ffmpeg:
+                    self.after(0, lambda: self._show_error(
+                        "Esporta MP3: installa lameenc  (pip install lameenc)  "
+                        "oppure FFmpeg."))
+                    return
+                cmd = [ffmpeg, "-y", "-i", src]
+                if fmt == "mp3":
+                    q_map = {"max": "0", "high": "2", "web": "5"}
+                    cmd += ["-codec:a", "libmp3lame", "-q:a", q_map.get(quality, "3")]
+                elif fmt == "opus":
+                    br_map = {"max": "128k", "high": "64k", "web": "32k"}
+                    cmd += ["-codec:a", "libopus", "-b:a",
+                            br_map.get(quality, "48k"),
+                            "-ac", "1", "-ar", "48000"]
+                    if quality == "web":
+                        cmd += ["-application", "voip"]
+                cmd.append(dest)
+                result = subprocess.run(cmd, capture_output=True, timeout=120)
+                if result.returncode != 0:
+                    err = result.stderr.decode(errors="replace")[-300:]
+                    self.after(0, lambda: self._show_error(f"Errore FFmpeg: {err}"))
+                    return
+
+            if os.path.exists(dest):
+                size_kb = os.path.getsize(dest) / 1024
+                self.after(0, lambda: self._show_error(
+                    f"Esportato: {os.path.basename(dest)}  ({size_kb:.0f} KB)",
+                    color=ACCENT))
+        except Exception as exc:
+            self.after(0, lambda: self._show_error(f"Errore esportazione: {exc}"))
+
+    @staticmethod
+    def _export_mp3_lameenc(src: str, dest: str, quality: str):
+        """
+        Encoder MP3 puro Python via lameenc — non richiede FFmpeg.
+        Legge il WAV sorgente, converte in mono se necessario, codifica.
+        """
+        import lameenc
+
+        bitrate_map = {"max": 320, "high": 128, "web": 48}
+        vbr_q_map   = {"max": 2,   "high": 2,   "web": 5}
+        bitrate = bitrate_map.get(quality, 64)
+        vbr_q   = vbr_q_map.get(quality, 3)
+
+        with wave.open(src, "rb") as wf:
+            n_ch   = wf.getnchannels()
+            sr     = wf.getframerate()
+            sw     = wf.getsampwidth()
+            n_fr   = wf.getnframes()
+            raw    = wf.readframes(n_fr)
+
+        # Assicura PCM 16-bit little-endian
+        if sw == 2:
+            pcm = raw
+        elif sw == 1:
+            import array as _arr
+            samples8 = _arr.array("B", raw)
+            samples16 = _arr.array("h", ((s - 128) << 8 for s in samples8))
+            pcm = samples16.tobytes()
+        else:
+            # 32-bit → scala a 16-bit
+            import struct as _s
+            vals = _s.unpack(f"<{n_fr * n_ch}i", raw)
+            import array as _arr
+            s16 = _arr.array("h", (v >> 16 for v in vals))
+            pcm = s16.tobytes()
+
+        encoder = lameenc.Encoder()
+        encoder.set_bit_rate(bitrate)
+        encoder.set_in_sample_rate(sr)
+        encoder.set_channels(n_ch)
+        encoder.set_quality(vbr_q)
+
+        mp3_data = encoder.encode(pcm) + encoder.flush()
+        with open(dest, "wb") as f:
+            f.write(mp3_data)
 
     # ══════════════════════════════════════════════════════════════════════
     #  Helpers
