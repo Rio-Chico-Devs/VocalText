@@ -1097,13 +1097,22 @@ class VocalTextApp(ctk.CTk):
         except ImportError:
             return False
 
+    @staticmethod
+    def _has_soundfile_opus() -> bool:
+        """soundfile (libsndfile) supporta Opus dalla 1.0.29 / soundfile 0.12+."""
+        try:
+            import soundfile as sf
+            return "OPUS" in sf.available_subtypes("OGG")
+        except Exception:
+            return False
+
     def _show_export_dialog(self):
         if not self._audio_path:
             return
 
         ffmpeg    = self._find_ffmpeg()
         has_mp3   = self._has_lameenc() or bool(ffmpeg)
-        has_opus  = bool(ffmpeg)
+        has_opus  = self._has_soundfile_opus() or bool(ffmpeg)
 
         win = ctk.CTkToplevel(self)
         win.title("Esporta audio")
@@ -1122,8 +1131,12 @@ class VocalTextApp(ctk.CTk):
         else:
             mp3_note = "MP3 non disponibile — esegui: pip install lameenc"
 
-        opus_note = "Opus disponibile (FFmpeg)" if ffmpeg else \
-                    "Opus non disponibile — richiede FFmpeg nel PATH"
+        if self._has_soundfile_opus():
+            opus_note = "Opus disponibile (soundfile)"
+        elif ffmpeg:
+            opus_note = "Opus disponibile (FFmpeg)"
+        else:
+            opus_note = "Opus non disponibile — esegui: pip install soundfile"
 
         ctk.CTkLabel(win, text=f"● {mp3_note}",
                      font=ctk.CTkFont(size=11),
@@ -1227,16 +1240,19 @@ class VocalTextApp(ctk.CTk):
 
     def _export_worker(self, fmt: str, quality: str, src: str, dest: str):
         """Thread worker per conversione MP3/Opus."""
-        import subprocess, shutil
+        import subprocess
         try:
             if fmt == "mp3" and self._has_lameenc():
                 self._export_mp3_lameenc(src, dest, quality)
+            elif fmt == "opus" and self._has_soundfile_opus():
+                self._export_opus_soundfile(src, dest, quality)
             else:
                 ffmpeg = self._find_ffmpeg()
                 if not ffmpeg:
-                    self.after(0, lambda: self._show_error(
-                        "Esporta MP3: installa lameenc  (pip install lameenc)  "
-                        "oppure FFmpeg."))
+                    msg = ("Esporta MP3: installa lameenc."
+                           if fmt == "mp3"
+                           else "Esporta Opus: installa soundfile.")
+                    self.after(0, lambda m=msg: self._show_error(m))
                     return
                 cmd = [ffmpeg, "-y", "-i", src]
                 if fmt == "mp3":
@@ -1263,6 +1279,54 @@ class VocalTextApp(ctk.CTk):
                     color=ACCENT))
         except Exception as exc:
             self.after(0, lambda: self._show_error(f"Errore esportazione: {exc}"))
+
+    @staticmethod
+    def _export_opus_soundfile(src: str, dest: str, quality: str):
+        """
+        Encoder Opus tramite libsndfile (via soundfile) — niente FFmpeg.
+        Opus richiede sample rate ∈ {8k,12k,16k,24k,48k}: resampliamo se serve.
+        Bitrate viene scelto da libsndfile in base alla qualità del compression
+        level (range 0..1 → la mappiamo dai preset).
+        """
+        import soundfile as sf
+        import numpy as np
+
+        data, sr = sf.read(src, dtype="float32", always_2d=False)
+        if data.ndim > 1:
+            data = data.mean(axis=1)
+
+        # Resample al sample rate Opus più vicino
+        valid_sr = [48000, 24000, 16000, 12000, 8000]
+        if quality == "web":
+            target_sr = 24000
+        elif quality == "high":
+            target_sr = 48000
+        else:
+            target_sr = 48000
+
+        # Scegli il sample rate compatibile più vicino al target
+        if sr not in valid_sr:
+            try:
+                from scipy import signal
+                from math import gcd
+                g = gcd(int(sr), target_sr)
+                up   = target_sr // g
+                down = int(sr)  // g
+                data = signal.resample_poly(data, up, down).astype(np.float32)
+                sr = target_sr
+            except Exception:
+                # Senza scipy: usa 48k arrotondando
+                data = data.astype(np.float32)
+                sr = target_sr
+
+        # libsndfile sceglie il bitrate in base al "compression level" (0..1).
+        # 0 = max qualità/bitrate, 1 = min.  Mappiamo dai preset.
+        level_map = {"max": 0.0, "high": 0.3, "web": 0.7}
+        sf.write(
+            dest, data, sr,
+            format="OGG", subtype="OPUS",
+            compression_level=level_map.get(quality, 0.5),
+        )
 
     @staticmethod
     def _export_mp3_lameenc(src: str, dest: str, quality: str):

@@ -9,8 +9,9 @@ pedalboard>=0.9.0
 pyloudnorm>=0.1.1
 noisereduce>=3.0.0
 
-# Export MP3 senza FFmpeg
+# Export MP3 / Opus senza FFmpeg
 lameenc>=1.7.0
+soundfile>=0.12.0   # supporta Opus nativo (via libsndfile)
 
 # Pulizia voce neurale (opzionale, ~50MB modello, qualità superiore)
 # Se non installato, viene usata pipeline DSP custom (sempre attiva)
