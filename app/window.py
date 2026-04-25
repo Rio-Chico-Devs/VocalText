@@ -392,9 +392,18 @@ class VocalTextApp(ctk.CTk):
             font=ctk.CTkFont(size=11),
             command=self._undo_edit).pack(side="left")
 
-        # ── Footer: export + info durata ──
+        # ── Footer: pulisci voce + export + info durata ──
         exp = ctk.CTkFrame(parent, fg_color="transparent")
         exp.grid(row=5, column=0, sticky="ew", padx=10, pady=(0, 10))
+
+        self._clean_btn = ctk.CTkButton(
+            exp, text="✨ Pulisci voce", width=140, height=30,
+            fg_color="transparent", border_width=1,
+            text_color=ACCENT,
+            font=ctk.CTkFont(size=12),
+            command=self._clean_voice)
+        self._clean_btn.pack(side="left", padx=(0, 6))
+
         ctk.CTkButton(
             exp, text="Esporta…", width=100, height=30,
             fg_color=ACCENT, hover_color=ACCENT_D, text_color="#0a1810",
@@ -928,6 +937,72 @@ class VocalTextApp(ctk.CTk):
         self._edit_clear_sel()
         self.player.play(on_end=lambda: self.after(0, self._on_play_end))
         self._play_btn.configure(text="⏸")
+
+    # ── Pulizia voce ───────────────────────────────────────────────────────────
+
+    def _clean_voice(self):
+        """Pulisce l'audio corrente dal rumore in background.
+        Usa lo stesso workflow Conferma/Annulla degli altri edit."""
+        if not self._audio_path:
+            return
+        import tempfile
+        from app.audio.enhance import clean_voice
+
+        src = self._audio_path
+        fd, tmp = tempfile.mkstemp(suffix=".wav", prefix="vt_clean_")
+        os.close(fd)
+
+        self._clean_btn.configure(state="disabled", text="⏳ Pulizia in corso…")
+        self._show_error("Pulizia voce in corso… (può richiedere qualche secondo)",
+                         color=WARN)
+
+        def _run():
+            try:
+                ok = clean_voice(src, tmp)
+                self.after(0, lambda: self._on_clean_done(tmp, ok))
+            except Exception as exc:
+                self.after(0, lambda: self._on_clean_error(str(exc), tmp))
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _on_clean_done(self, tmp_path: str, ok: bool):
+        self._clean_btn.configure(state="normal", text="✨ Pulisci voce")
+        if not ok or not os.path.exists(tmp_path):
+            self._show_error(
+                "Pulizia non riuscita — l'audio originale non è stato modificato.")
+            try:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+            except Exception:
+                pass
+            return
+
+        # Prima pulizia: salva backup dell'originale
+        if not self._edit_pending:
+            self._audio_original = self._audio_path
+            self._edit_pending   = True
+
+        # Swap a temp pulito e riproduci subito
+        self._audio_path = tmp_path
+        self.player.stop()
+        duration = self.player.load(tmp_path)
+        self._time_tot.configure(text=_fmt_time(duration))
+        self._dur_lbl.configure(text=f"{_fmt_time(duration)} · WAV (pulito)")
+        self._draw_waveform(tmp_path)
+        self._edit_clear_sel()
+        self._confirm_bar.grid()
+        self._hide_error()
+        self.player.play(on_end=lambda: self.after(0, self._on_play_end))
+        self._play_btn.configure(text="⏸")
+
+    def _on_clean_error(self, msg: str, tmp_path: str):
+        self._clean_btn.configure(state="normal", text="✨ Pulisci voce")
+        try:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+        except Exception:
+            pass
+        self._show_error(f"Errore pulizia voce: {msg}")
 
     def _tick(self):
         if self.player.is_playing and self.player.duration > 0:
