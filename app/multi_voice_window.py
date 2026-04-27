@@ -11,7 +11,7 @@ import threading
 import tempfile
 import tkinter as tk
 import customtkinter as ctk
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from tkinter import filedialog
 
 from app.audio.player import AudioPlayer
@@ -71,6 +71,7 @@ class MultiVoiceWindow(ctk.CTkToplevel):
 
         # Generation queue
         self._gen_queue: list[str] = []
+        self._gen_total = 0
         self._generating = False
         self._stop_req = False
 
@@ -470,6 +471,7 @@ class MultiVoiceWindow(ctk.CTkToplevel):
         if not self._gen_queue:
             return
 
+        self._gen_total = len(self._gen_queue)
         self._stop_req = False
         self._generating = True
         self._gen_btn.configure(state="disabled")
@@ -491,10 +493,10 @@ class MultiVoiceWindow(ctk.CTkToplevel):
             self._generate_next()
             return
 
-        done  = len([x for x in self._voices if x.status == "done"])
-        total = len([x for x in self._voices if x.text.strip()])
-        self._prog_lbl.configure(text=f"Generazione {v.label} ({done + 1}/{total})…")
-        self._prog_bar.set(done / total if total else 0)
+        done_in_batch = self._gen_total - len(self._gen_queue) - 1
+        self._prog_lbl.configure(
+            text=f"Generazione {v.label} ({done_in_batch + 1}/{self._gen_total})…")
+        self._prog_bar.set(done_in_batch / self._gen_total if self._gen_total else 0)
 
         v.status = "generating"
         self._update_voice_row(vid)
@@ -531,9 +533,8 @@ class MultiVoiceWindow(ctk.CTkToplevel):
             if self._selected_id == vid or (cur and not cur.audio_path):
                 self._select_voice(vid)
 
-        done  = len([x for x in self._voices if x.status == "done"])
-        total = len([x for x in self._voices if x.text.strip()])
-        self._prog_bar.set(done / total if total else 0)
+        done_in_batch = self._gen_total - len(self._gen_queue)
+        self._prog_bar.set(done_in_batch / self._gen_total if self._gen_total else 0)
         self._generate_next()
 
     def _on_voice_error(self, vid: str, msg: str):
@@ -551,7 +552,7 @@ class MultiVoiceWindow(ctk.CTkToplevel):
         done  = len([x for x in self._voices if x.status == "done"])
         total = len([x for x in self._voices if x.text.strip()])
         self._prog_lbl.configure(text=f"Completate: {done}/{total}")
-        self._prog_bar.set(1.0 if total else 0)
+        self._prog_bar.set(1.0 if self._gen_total else 0)
 
     # ══════════════════════════════════════════════════════════════════════
     #  Player logic
@@ -605,15 +606,16 @@ class MultiVoiceWindow(ctk.CTkToplevel):
         if w <= 1:
             return
         x = int((secs / self.player.duration) * w)
+        h = self._wave_canvas.winfo_height() or 70
         self._wave_canvas.delete("playhead")
-        self._wave_canvas.create_line(x, 0, x, 56, fill=ACCENT, width=2, tags="playhead")
+        self._wave_canvas.create_line(x, 0, x, h, fill=ACCENT, width=2, tags="playhead")
 
     # ── Waveform ──────────────────────────────────────────────────────────
 
     def _draw_waveform(self, path: str):
         self.update_idletasks()
         W = self._wave_canvas.winfo_width() or 700
-        H = 56
+        H = self._wave_canvas.winfo_height() or 70
         self._wave_canvas.delete("wave")
         try:
             with wave.open(path, "rb") as wf:
@@ -762,6 +764,11 @@ class MultiVoiceWindow(ctk.CTkToplevel):
         self._audio_original = None
         self._edit_pending   = False
         self._confirm_bar.grid_remove()
+        v = self._cur_voice()
+        if v:
+            v.audio_path     = self._audio_path
+            v.audio_original = None
+            v.edit_pending   = False
         self.player.stop()
         duration = self.player.load(self._audio_path)
         self._time_tot.configure(text=_fmt_time(duration))
