@@ -545,3 +545,221 @@ class MultiVoiceWindow(ctk.CTkToplevel):
         total = len([x for x in self._voices if x.text.strip()])
         self._prog_lbl.configure(text=f"Completate: {done}/{total}")
         self._prog_bar.set(1.0 if total else 0)
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  Player logic
+    # ══════════════════════════════════════════════════════════════════════
+
+    def _toggle_play(self):
+        if not self._audio_path:
+            return
+        if self.player.is_playing:
+            self.player.pause()
+            self._play_btn.configure(text="▶")
+        else:
+            self.player.play(on_end=lambda: self.after(0, self._on_play_end))
+            self._play_btn.configure(text="⏸")
+
+    def _on_play_end(self):
+        self._play_btn.configure(text="▶")
+        self._seek_var.set(0)
+        self._time_cur.configure(text="0:00")
+        self._update_playhead(0.0)
+
+    def _on_seek(self, value):
+        if not self.player.duration:
+            return
+        secs = (float(value) / 100.0) * self.player.duration
+        self.player.seek(secs)
+        self._time_cur.configure(text=_fmt_time(secs))
+        self._update_playhead(secs)
+
+    def _seek_to_x(self, x: int):
+        w = self._wave_canvas.winfo_width()
+        if w <= 0:
+            return
+        secs = max(0.0, min(x / w, 1.0)) * self.player.duration
+        self.player.seek(secs)
+        self.player.play(on_end=lambda: self.after(0, self._on_play_end))
+        self._play_btn.configure(text="⏸")
+
+    def _tick(self):
+        if self.player.is_playing and self.player.duration > 0:
+            pos = self.player.position
+            self._seek_var.set((pos / self.player.duration) * 100)
+            self._time_cur.configure(text=_fmt_time(pos))
+            self._update_playhead(pos)
+        self.after(200, self._tick)
+
+    def _update_playhead(self, secs: float):
+        if not self.player.duration:
+            return
+        w = self._wave_canvas.winfo_width()
+        if w <= 1:
+            return
+        x = int((secs / self.player.duration) * w)
+        self._wave_canvas.delete("playhead")
+        self._wave_canvas.create_line(x, 0, x, 56, fill=ACCENT, width=2, tags="playhead")
+
+    # ── Waveform ──────────────────────────────────────────────────────────
+
+    def _draw_waveform(self, path: str):
+        self.update_idletasks()
+        W = self._wave_canvas.winfo_width() or 700
+        H = 56
+        self._wave_canvas.delete("wave")
+        try:
+            with wave.open(path, "rb") as wf:
+                n_frames   = wf.getnframes()
+                sampwidth  = wf.getsampwidth()
+                n_channels = wf.getnchannels()
+                raw = wf.readframes(n_frames)
+            fmt = {1: "b", 2: "h", 4: "i"}.get(sampwidth, "h")
+            samples = struct.unpack(f"<{n_frames * n_channels}{fmt}", raw)
+            if n_channels > 1:
+                samples = [samples[i] for i in range(0, len(samples), n_channels)]
+            max_val = 2 ** (sampwidth * 8 - 1)
+            norm = [s / max_val for s in samples]
+            step = max(1, len(norm) // W)
+            bars = [max(abs(s) for s in norm[i:i + step])
+                    for i in range(0, len(norm), step)][:W]
+            for x, amp in enumerate(bars):
+                bh = max(2, amp * (H - 8))
+                y0 = (H - bh) / 2
+                self._wave_canvas.create_line(x, y0, x, y0 + bh, fill=ACCENT, tags="wave")
+        except Exception:
+            import random; random.seed(42)
+            for x in range(W):
+                amp = 0.2 + 0.6 * abs(math.sin(x * 0.12)) * (0.5 + 0.5 * random.random())
+                bh = max(2, amp * (H - 8))
+                y0 = (H - bh) / 2
+                self._wave_canvas.create_line(x, y0, x, y0 + bh, fill=ACCENT, tags="wave")
+
+    # ── Selection ─────────────────────────────────────────────────────────
+
+    def _sel_press(self, event):
+        self._sel_drag_x0 = event.x
+        self._sel_start = None
+        self._sel_end   = None
+        self._wave_canvas.delete("selection")
+        self._edit_bar.grid_remove()
+
+    def _sel_motion(self, event):
+        if self._sel_drag_x0 is None or not self.player.duration:
+            return
+        x0, x1 = self._sel_drag_x0, event.x
+        xa, xb = min(x0, x1), max(x0, x1)
+        if xb - xa < 3:
+            return
+        H = self._wave_canvas.winfo_height() or 70
+        self._wave_canvas.delete("selection")
+        self._wave_canvas.create_rectangle(xa, 0, xb, H,
+            fill=ACCENT, stipple="gray25", outline=ACCENT, width=1, tags="selection")
+        self._wave_canvas.create_line(xa, 0, xa, H, fill=ACCENT, width=2, tags="selection")
+        self._wave_canvas.create_line(xb, 0, xb, H, fill=ACCENT, width=2, tags="selection")
+
+    def _sel_release(self, event):
+        if self._sel_drag_x0 is None:
+            return
+        dx = abs(event.x - self._sel_drag_x0)
+        if dx < 6 or not self.player.duration:
+            self._wave_canvas.delete("selection")
+            self._edit_bar.grid_remove()
+            self._sel_drag_x0 = None
+            self._seek_to_x(event.x)
+            return
+        w  = self._wave_canvas.winfo_width()
+        xa = min(self._sel_drag_x0, event.x)
+        xb = max(self._sel_drag_x0, event.x)
+        dur = self.player.duration
+        self._sel_start = max(0.0, (xa / w) * dur)
+        self._sel_end   = min(dur,  (xb / w) * dur)
+        self._sel_drag_x0 = None
+        self._sel_lbl.configure(
+            text=f"{_fmt_time(self._sel_start)} → {_fmt_time(self._sel_end)}"
+                 f"  ({_fmt_time(self._sel_end - self._sel_start)})")
+        self._edit_bar.grid()
+
+    def _edit_clear_sel(self):
+        self._sel_start = None
+        self._sel_end   = None
+        self._wave_canvas.delete("selection")
+        self._edit_bar.grid_remove()
+
+    # ── Editing ───────────────────────────────────────────────────────────
+
+    def _apply_edit(self, mode: str):
+        if self._sel_start is None or not self._audio_path:
+            return
+        path = self._audio_path
+        try:
+            with wave.open(path, "rb") as wf:
+                n_ch = wf.getnchannels(); sw = wf.getsampwidth()
+                sr   = wf.getframerate(); n_fr = wf.getnframes()
+                raw  = wf.readframes(n_fr)
+            fmt = {1: "b", 2: "h", 4: "i"}.get(sw, "h")
+            all_s = list(struct.unpack(f"<{n_fr * n_ch}{fmt}", raw))
+            s0 = max(0, min(int(self._sel_start * sr) * n_ch, len(all_s)))
+            s1 = max(0, min(int(self._sel_end   * sr) * n_ch, len(all_s)))
+            result = (all_s[:s0] + all_s[s1:]) if mode == "delete" else all_s[s0:s1]
+            if not result:
+                self._show_status("La modifica produrrebbe un file vuoto.", DANGER)
+                return
+            fd, tmp = tempfile.mkstemp(suffix=".wav", prefix="vt_mvedit_")
+            os.close(fd)
+            with wave.open(tmp, "wb") as wf:
+                wf.setnchannels(n_ch); wf.setsampwidth(sw); wf.setframerate(sr)
+                wf.writeframes(struct.pack(f"<{len(result)}{fmt}", *result))
+            if not self._edit_pending:
+                self._audio_original = path
+                self._edit_pending   = True
+            self._audio_path = tmp
+            self.player.stop()
+            duration = self.player.load(tmp)
+            label = "eliminata" if mode == "delete" else "ritagliato"
+            self._time_tot.configure(text=_fmt_time(duration))
+            self._dur_lbl.configure(text=f"{_fmt_time(duration)} · WAV ({label})")
+            self._draw_waveform(tmp)
+            self._edit_clear_sel()
+            self._confirm_bar.grid()
+            self._hide_status()
+            self.player.play(on_end=lambda: self.after(0, self._on_play_end))
+            self._play_btn.configure(text="⏸")
+        except Exception as exc:
+            self._show_status(f"Errore editing: {exc}", DANGER)
+
+    def _confirm_edit(self):
+        if not self._edit_pending:
+            return
+        if self._audio_original and self._audio_original != self._audio_path:
+            try: os.unlink(self._audio_original)
+            except Exception: pass
+        self._audio_original = None
+        self._edit_pending   = False
+        self._confirm_bar.grid_remove()
+        self._dur_lbl.configure(text=f"{_fmt_time(self.player.duration or 0)} · WAV")
+        v = self._cur_voice()
+        if v:
+            v.audio_path = self._audio_path
+            v.audio_original = None
+            v.edit_pending = False
+
+    def _undo_edit(self):
+        if not self._edit_pending or not self._audio_original:
+            self._confirm_bar.grid_remove()
+            return
+        if self._audio_path and self._audio_path != self._audio_original:
+            try: os.unlink(self._audio_path)
+            except Exception: pass
+        self._audio_path     = self._audio_original
+        self._audio_original = None
+        self._edit_pending   = False
+        self._confirm_bar.grid_remove()
+        self.player.stop()
+        duration = self.player.load(self._audio_path)
+        self._time_tot.configure(text=_fmt_time(duration))
+        self._dur_lbl.configure(text=f"{_fmt_time(duration)} · WAV")
+        self._draw_waveform(self._audio_path)
+        self._edit_clear_sel()
+        self.player.play(on_end=lambda: self.after(0, self._on_play_end))
+        self._play_btn.configure(text="⏸")
