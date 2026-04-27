@@ -185,3 +185,147 @@ class MultiVoiceWindow(ctk.CTkToplevel):
         v = self._cur_voice()
         if v:
             v.text = self._textbox.get("1.0", "end").strip()
+
+    # ── Player card ───────────────────────────────────────────────────────
+
+    def _build_player(self, parent):
+        self._player_card = ctk.CTkFrame(parent, corner_radius=10)
+        self._player_card.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
+        self._player_card.grid_columnconfigure(0, weight=1)
+        self._player_card.grid_remove()
+
+        # Waveform
+        self._wave_canvas = tk.Canvas(
+            self._player_card, height=70, bg="#111827",
+            highlightthickness=0, cursor="crosshair")
+        self._wave_canvas.grid(row=0, column=0, sticky="ew", padx=10, pady=(8, 2))
+        self._wave_canvas.bind("<ButtonPress-1>",  self._sel_press)
+        self._wave_canvas.bind("<B1-Motion>",       self._sel_motion)
+        self._wave_canvas.bind("<ButtonRelease-1>", self._sel_release)
+
+        # Time row
+        tc = ctk.CTkFrame(self._player_card, fg_color="transparent")
+        tc.grid(row=1, column=0, sticky="ew", padx=10)
+        self._time_cur = ctk.CTkLabel(tc, text="0:00",
+                                      font=ctk.CTkFont(size=10), text_color="gray")
+        self._time_cur.pack(side="left")
+        self._time_tot = ctk.CTkLabel(tc, text="0:00",
+                                      font=ctk.CTkFont(size=10), text_color="gray")
+        self._time_tot.pack(side="right")
+
+        # Seek slider
+        self._seek_var = tk.DoubleVar(value=0.0)
+        ctk.CTkSlider(
+            self._player_card, from_=0, to=100,
+            variable=self._seek_var, command=self._on_seek,
+            progress_color=ACCENT, button_color=ACCENT,
+            button_hover_color=ACCENT_D,
+        ).grid(row=2, column=0, sticky="ew", padx=10, pady=(2, 4))
+
+        # Transport
+        tr = ctk.CTkFrame(self._player_card, fg_color="transparent")
+        tr.grid(row=3, column=0, sticky="ew", padx=10, pady=(0, 2))
+        self._play_btn = ctk.CTkButton(
+            tr, text="▶", width=44, height=36,
+            fg_color=ACCENT, hover_color=ACCENT_D, text_color="#0a1810",
+            font=ctk.CTkFont(size=16, weight="bold"),
+            command=self._toggle_play)
+        self._play_btn.pack(side="left", padx=(0, 6))
+        ctk.CTkButton(tr, text="⏮", width=36, height=36,
+                      fg_color="transparent", border_width=1,
+                      font=ctk.CTkFont(size=14),
+                      command=lambda: self.player.restart()).pack(side="left")
+
+        # Edit bar (shown only when there is a selection)
+        self._edit_bar = ctk.CTkFrame(self._player_card, fg_color="transparent")
+        self._edit_bar.grid(row=4, column=0, sticky="ew", padx=10, pady=(0, 2))
+        self._edit_bar.grid_remove()
+        self._sel_lbl = ctk.CTkLabel(self._edit_bar, text="",
+                                     font=ctk.CTkFont(size=10), text_color="gray")
+        self._sel_lbl.pack(side="left", padx=(0, 8))
+        ctk.CTkButton(self._edit_bar, text="✂ Elimina", width=90, height=26,
+                      fg_color="transparent", border_width=1, text_color=DANGER,
+                      font=ctk.CTkFont(size=11),
+                      command=lambda: self._apply_edit("delete")).pack(side="left", padx=(0, 4))
+        ctk.CTkButton(self._edit_bar, text="✂ Ritaglia", width=90, height=26,
+                      fg_color="transparent", border_width=1, text_color=WARN,
+                      font=ctk.CTkFont(size=11),
+                      command=lambda: self._apply_edit("crop")).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(self._edit_bar, text="✕", width=26, height=26,
+                      fg_color="transparent", text_color="gray",
+                      font=ctk.CTkFont(size=11),
+                      command=self._edit_clear_sel).pack(side="left")
+
+        # Confirm bar
+        self._confirm_bar = ctk.CTkFrame(
+            self._player_card, fg_color=("gray90", "#1e2a1e"), corner_radius=6)
+        self._confirm_bar.grid(row=5, column=0, sticky="ew", padx=10, pady=(0, 4))
+        self._confirm_bar.grid_remove()
+        ctk.CTkLabel(self._confirm_bar, text="Ascolta l'anteprima, poi:",
+                     font=ctk.CTkFont(size=11), text_color="gray").pack(side="left", padx=(8, 6))
+        ctk.CTkButton(self._confirm_bar, text="✓  Conferma", height=28, width=100,
+                      fg_color=ACCENT, hover_color=ACCENT_D, text_color="#0a1810",
+                      font=ctk.CTkFont(size=11),
+                      command=self._confirm_edit).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(self._confirm_bar, text="↩  Annulla", height=28, width=90,
+                      fg_color="transparent", border_width=1, text_color=WARN,
+                      font=ctk.CTkFont(size=11),
+                      command=self._undo_edit).pack(side="left")
+
+        # Footer
+        foot = ctk.CTkFrame(self._player_card, fg_color="transparent")
+        foot.grid(row=6, column=0, sticky="ew", padx=10, pady=(0, 8))
+        self._clean_btn = ctk.CTkButton(
+            foot, text="✨ Pulisci voce", width=130, height=28,
+            fg_color="transparent", border_width=1, text_color=ACCENT,
+            font=ctk.CTkFont(size=11), command=self._clean_voice)
+        self._clean_btn.pack(side="left", padx=(0, 4))
+        self._speed_btn = ctk.CTkButton(
+            foot, text="⏱ Velocità", width=100, height=28,
+            fg_color="transparent", border_width=1, text_color=ACCENT,
+            font=ctk.CTkFont(size=11), command=self._show_speed_dialog)
+        self._speed_btn.pack(side="left", padx=(0, 4))
+        ctk.CTkButton(foot, text="Esporta…", width=90, height=28,
+                      fg_color=ACCENT, hover_color=ACCENT_D, text_color="#0a1810",
+                      font=ctk.CTkFont(size=11, weight="bold"),
+                      command=self._show_export_dialog).pack(side="left")
+        self._dur_lbl = ctk.CTkLabel(foot, text="",
+                                     font=ctk.CTkFont(size=10), text_color="gray")
+        self._dur_lbl.pack(side="right")
+
+        # Status label
+        self._status_lbl = ctk.CTkLabel(
+            self._player_card, text="",
+            font=ctk.CTkFont(size=11), text_color=DANGER)
+        self._status_lbl.grid(row=7, column=0, sticky="w", padx=12, pady=(0, 4))
+
+    # ── Bottom bar ────────────────────────────────────────────────────────
+
+    def _build_bottom(self):
+        bar = ctk.CTkFrame(self, corner_radius=0, height=54)
+        bar.grid(row=1, column=1, sticky="ew")
+        bar.grid_propagate(False)
+        bar.grid_columnconfigure(2, weight=1)
+
+        self._gen_btn = ctk.CTkButton(
+            bar, text="▶  Genera tutte", width=150, height=36,
+            fg_color=ACCENT, hover_color=ACCENT_D, text_color="#0a1810",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            command=self._start_generation)
+        self._gen_btn.grid(row=0, column=0, padx=(12, 6), pady=9)
+
+        self._stop_btn = ctk.CTkButton(
+            bar, text="⏹ Stop", width=80, height=36,
+            fg_color="transparent", border_width=1, text_color=DANGER,
+            font=ctk.CTkFont(size=12), state="disabled",
+            command=self._stop_generation)
+        self._stop_btn.grid(row=0, column=1, padx=(0, 12), pady=9)
+
+        self._prog_lbl = ctk.CTkLabel(
+            bar, text="", font=ctk.CTkFont(size=11), text_color="gray")
+        self._prog_lbl.grid(row=0, column=2, sticky="w", padx=4)
+
+        self._prog_bar = ctk.CTkProgressBar(bar, width=260, height=8,
+                                             progress_color=ACCENT)
+        self._prog_bar.grid(row=0, column=3, padx=(0, 16), pady=9)
+        self._prog_bar.set(0)
