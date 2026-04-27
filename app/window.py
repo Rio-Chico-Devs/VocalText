@@ -1554,8 +1554,20 @@ class VocalTextApp(ctk.CTk):
         self._err_lbl.configure(text="")
 
     def _open_multi_voice(self):
+        # Singleton: se la finestra esiste già la riporta in primo piano
+        existing = getattr(self, "_multi_voice_win", None)
+        if existing is not None:
+            try:
+                if existing.winfo_exists():
+                    existing.deiconify()
+                    existing.lift()
+                    existing.focus_force()
+                    return
+            except Exception:
+                pass
         from app.multi_voice_window import MultiVoiceWindow
-        MultiVoiceWindow(self)
+        win = MultiVoiceWindow(self)
+        self._multi_voice_win = win
 
     def _on_close(self):
         self.player.quit()

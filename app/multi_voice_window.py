@@ -370,8 +370,11 @@ class MultiVoiceWindow(ctk.CTkToplevel):
         self._row_widgets[entry.id] = {"row": row, "icon": icon, "name": name}
 
     def _select_voice(self, vid: str):
-        # Save current text and player state back to current entry
-        if self._selected_id:
+        # Save current text and player state — but only if switching to a
+        # DIFFERENT voice. Re-selecting the same voice (e.g. after generation
+        # completes) must not overwrite freshly-set audio_path with stale
+        # player state.
+        if self._selected_id and self._selected_id != vid:
             old = self._get_voice(self._selected_id)
             if old:
                 old.text = self._textbox.get("1.0", "end").strip()
@@ -521,7 +524,11 @@ class MultiVoiceWindow(ctk.CTkToplevel):
             v.status = "done"
             v.audio_path = path
             self._update_voice_row(vid)
-            if self._selected_id == vid:
+            # Auto-load nel player se la voce è già selezionata, oppure se la
+            # voce attualmente selezionata non ha ancora audio (così la prima
+            # voce completata appare automaticamente nel player).
+            cur = self._cur_voice()
+            if self._selected_id == vid or (cur and not cur.audio_path):
                 self._select_voice(vid)
 
         done  = len([x for x in self._voices if x.status == "done"])
@@ -1106,11 +1113,32 @@ class MultiVoiceWindow(ctk.CTkToplevel):
     # ══════════════════════════════════════════════════════════════════════
 
     def _show_status(self, msg: str, color: str = DANGER):
-        self._status_lbl.configure(text=f"⚠  {msg}", text_color=color)
+        # Icona coerente col tipo di messaggio
+        if color == ACCENT:
+            icon = "✓"
+        elif color == WARN:
+            icon = "⏳"
+        else:
+            icon = "⚠"
+        self._status_lbl.configure(text=f"{icon}  {msg}", text_color=color)
 
     def _hide_status(self):
         self._status_lbl.configure(text="")
 
     def _on_close(self):
+        # Cleanup di tutti i temp files (audio generati + backup edit)
+        for v in self._voices:
+            for p in (v.audio_path, v.audio_original):
+                if p and os.path.exists(p):
+                    try:
+                        os.unlink(p)
+                    except Exception:
+                        pass
         self.player.quit()
+        # Rimuove il riferimento singleton dal parent
+        try:
+            if getattr(self._app, "_multi_voice_win", None) is self:
+                self._app._multi_voice_win = None
+        except Exception:
+            pass
         self.destroy()
