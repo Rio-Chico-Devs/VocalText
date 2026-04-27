@@ -329,3 +329,219 @@ class MultiVoiceWindow(ctk.CTkToplevel):
                                              progress_color=ACCENT)
         self._prog_bar.grid(row=0, column=3, padx=(0, 16), pady=9)
         self._prog_bar.set(0)
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  Voice list management
+    # ══════════════════════════════════════════════════════════════════════
+
+    def _add_voice(self):
+        self._counter += 1
+        vid = f"v{self._counter}"
+        entry = VoiceEntry(id=vid, label=f"Voce {self._counter}")
+        self._voices.append(entry)
+        self._build_voice_row(entry)
+        self._select_voice(vid)
+
+    def _build_voice_row(self, entry: VoiceEntry):
+        row = ctk.CTkFrame(self._voice_scroll, corner_radius=6,
+                           fg_color=("gray88", "gray20"), height=46)
+        row.pack(fill="x", pady=3, padx=2)
+        row.pack_propagate(False)
+        row.grid_columnconfigure(1, weight=1)
+
+        icon = ctk.CTkLabel(row, text=STATUS_ICON[entry.status], width=22,
+                            font=ctk.CTkFont(size=13),
+                            text_color=STATUS_COLOR[entry.status])
+        icon.grid(row=0, column=0, padx=(8, 2), sticky="ns")
+
+        name = ctk.CTkLabel(row, text=entry.label,
+                            font=ctk.CTkFont(size=12), anchor="w")
+        name.grid(row=0, column=1, sticky="ew", padx=2)
+
+        del_btn = ctk.CTkButton(row, text="✕", width=24, height=24,
+                                fg_color="transparent", hover_color=DANGER,
+                                text_color="gray", font=ctk.CTkFont(size=10),
+                                command=lambda vid=entry.id: self._delete_voice(vid))
+        del_btn.grid(row=0, column=2, padx=(0, 4))
+
+        for w in (row, icon, name):
+            w.bind("<Button-1>", lambda e, vid=entry.id: self._select_voice(vid))
+
+        self._row_widgets[entry.id] = {"row": row, "icon": icon, "name": name}
+
+    def _select_voice(self, vid: str):
+        # Save current text and player state back to current entry
+        if self._selected_id:
+            old = self._get_voice(self._selected_id)
+            if old:
+                old.text = self._textbox.get("1.0", "end").strip()
+                old.audio_path     = self._audio_path
+                old.audio_original = self._audio_original
+                old.edit_pending   = self._edit_pending
+
+        self._selected_id = vid
+        v = self._get_voice(vid)
+        if not v:
+            return
+
+        # Highlight row
+        for vid2, w in self._row_widgets.items():
+            w["row"].configure(border_width=2 if vid2 == vid else 0,
+                               border_color=ACCENT)
+
+        # Update editor
+        self._voice_label.configure(text=v.label)
+        self._textbox.delete("1.0", "end")
+        self._textbox.insert("1.0", v.text)
+
+        # Update player
+        self._edit_clear_sel()
+        self.player.stop()
+        self._audio_path     = v.audio_path
+        self._audio_original = v.audio_original
+        self._edit_pending   = v.edit_pending
+
+        if v.audio_path and os.path.exists(v.audio_path):
+            duration = self.player.load(v.audio_path)
+            self._time_tot.configure(text=_fmt_time(duration))
+            self._dur_lbl.configure(text=f"{_fmt_time(duration)} · WAV")
+            self._draw_waveform(v.audio_path)
+            self._seek_var.set(0)
+            self._play_btn.configure(text="▶")
+            self._player_card.grid()
+            if self._edit_pending:
+                self._confirm_bar.grid()
+            else:
+                self._confirm_bar.grid_remove()
+        else:
+            self._player_card.grid_remove()
+            self._confirm_bar.grid_remove()
+
+    def _delete_voice(self, vid: str):
+        v = self._get_voice(vid)
+        if not v or v.status == "generating":
+            return
+        for p in [v.audio_path, v.audio_original]:
+            if p and os.path.exists(p):
+                try: os.unlink(p)
+                except Exception: pass
+        self._voices = [x for x in self._voices if x.id != vid]
+        w = self._row_widgets.pop(vid, None)
+        if w:
+            w["row"].destroy()
+        if self._selected_id == vid:
+            self._selected_id = None
+            self._audio_path = None
+            self._player_card.grid_remove()
+            if self._voices:
+                self._select_voice(self._voices[-1].id)
+
+    def _update_voice_row(self, vid: str):
+        v = self._get_voice(vid)
+        w = self._row_widgets.get(vid)
+        if not v or not w:
+            return
+        w["icon"].configure(text=STATUS_ICON[v.status],
+                            text_color=STATUS_COLOR[v.status])
+
+    def _get_voice(self, vid: str) -> VoiceEntry | None:
+        return next((v for v in self._voices if v.id == vid), None)
+
+    def _cur_voice(self) -> VoiceEntry | None:
+        return self._get_voice(self._selected_id) if self._selected_id else None
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  Generation queue
+    # ══════════════════════════════════════════════════════════════════════
+
+    def _start_generation(self):
+        if self._generating:
+            return
+        # Save current text first
+        v = self._cur_voice()
+        if v:
+            v.text = self._textbox.get("1.0", "end").strip()
+
+        self._gen_queue = [v.id for v in self._voices
+                           if v.status == "idle" and v.text.strip()]
+        if not self._gen_queue:
+            return
+
+        self._stop_req = False
+        self._generating = True
+        self._gen_btn.configure(state="disabled")
+        self._stop_btn.configure(state="normal")
+        self._generate_next()
+
+    def _stop_generation(self):
+        self._stop_req = True
+        self._stop_btn.configure(state="disabled")
+
+    def _generate_next(self):
+        if self._stop_req or not self._gen_queue:
+            self._on_generation_done()
+            return
+
+        vid = self._gen_queue.pop(0)
+        v = self._get_voice(vid)
+        if not v:
+            self._generate_next()
+            return
+
+        done  = len([x for x in self._voices if x.status == "done"])
+        total = len([x for x in self._voices if x.text.strip()])
+        self._prog_lbl.configure(text=f"Generazione {v.label} ({done + 1}/{total})…")
+        self._prog_bar.set(done / total if total else 0)
+
+        v.status = "generating"
+        self._update_voice_row(vid)
+
+        voice    = self._app._voice
+        ref_wav  = self._app._ref_wav
+        lang     = self._lang.get()
+        polish   = self._polish.get()
+
+        if not voice:
+            self._on_voice_error(vid, "Nessuna voce selezionata nella finestra principale.")
+            return
+
+        self._app.engine.generate(
+            text=v.text,
+            voice=voice,
+            language=lang,
+            reference_wav=ref_wav,
+            polish=polish,
+            on_done=lambda p, _vid=vid: self.after(0, lambda: self._on_voice_done(_vid, p)),
+            on_error=lambda m, _vid=vid: self.after(0, lambda: self._on_voice_error(_vid, m)),
+        )
+
+    def _on_voice_done(self, vid: str, path: str):
+        v = self._get_voice(vid)
+        if v:
+            v.status = "done"
+            v.audio_path = path
+            self._update_voice_row(vid)
+            if self._selected_id == vid:
+                self._select_voice(vid)
+
+        done  = len([x for x in self._voices if x.status == "done"])
+        total = len([x for x in self._voices if x.text.strip()])
+        self._prog_bar.set(done / total if total else 0)
+        self._generate_next()
+
+    def _on_voice_error(self, vid: str, msg: str):
+        v = self._get_voice(vid)
+        if v:
+            v.status = "error"
+            v.error_msg = msg
+            self._update_voice_row(vid)
+        self._generate_next()
+
+    def _on_generation_done(self):
+        self._generating = False
+        self._gen_btn.configure(state="normal")
+        self._stop_btn.configure(state="disabled")
+        done  = len([x for x in self._voices if x.status == "done"])
+        total = len([x for x in self._voices if x.text.strip()])
+        self._prog_lbl.configure(text=f"Completate: {done}/{total}")
+        self._prog_bar.set(1.0 if total else 0)
