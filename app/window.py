@@ -161,9 +161,18 @@ class VocalTextApp(ctk.CTk):
         self._ref_clear_btn.pack(fill="x", pady=(4, 0))
         self._ref_clear_btn.pack_forget()
 
+        # ── Multi-voci ──
+        ctk.CTkButton(
+            sb, text="🎭  Multi-voci", height=30,
+            fg_color="transparent", border_width=1,
+            text_color=ACCENT, hover_color=("gray85", "gray25"),
+            font=ctk.CTkFont(size=12),
+            command=self._open_multi_voice,
+        ).grid(row=7, column=0, sticky="ew", padx=14, pady=(0, 8))
+
         # ── Parametri ──
         params = ctk.CTkFrame(sb, fg_color="transparent")
-        params.grid(row=6, column=0, sticky="ew", padx=14, pady=(8, 14))
+        params.grid(row=6, column=0, sticky="ew", padx=14, pady=(8, 4))
 
         ctk.CTkLabel(params, text="PARAMETRI",
                      font=ctk.CTkFont(size=10, weight="bold"),
@@ -1543,6 +1552,10 @@ class VocalTextApp(ctk.CTk):
 
     def _hide_error(self):
         self._err_lbl.configure(text="")
+
+    def _open_multi_voice(self):
+        from app.multi_voice_window import MultiVoiceWindow
+        MultiVoiceWindow(self)
 
     def _on_close(self):
         self.player.quit()

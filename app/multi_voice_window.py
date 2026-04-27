@@ -763,3 +763,354 @@ class MultiVoiceWindow(ctk.CTkToplevel):
         self._edit_clear_sel()
         self.player.play(on_end=lambda: self.after(0, self._on_play_end))
         self._play_btn.configure(text="⏸")
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  Pulisci voce
+    # ══════════════════════════════════════════════════════════════════════
+
+    def _clean_voice(self):
+        if not self._audio_path:
+            return
+        from app.audio.enhance import clean_voice
+        src = self._audio_path
+        fd, tmp = tempfile.mkstemp(suffix=".wav", prefix="vt_mvclean_")
+        os.close(fd)
+        self._clean_btn.configure(state="disabled", text="⏳ Pulizia…")
+        self._show_status("Pulizia voce in corso…", WARN)
+
+        def _run():
+            try:
+                ok = clean_voice(src, tmp)
+                self.after(0, lambda: self._on_clean_done(tmp, ok))
+            except Exception as exc:
+                self.after(0, lambda: self._on_clean_error(str(exc), tmp))
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _on_clean_done(self, tmp: str, ok: bool):
+        self._clean_btn.configure(state="normal", text="✨ Pulisci voce")
+        if not ok or not os.path.exists(tmp):
+            self._show_status("Pulizia non riuscita.", DANGER)
+            try: os.unlink(tmp)
+            except Exception: pass
+            return
+        if not self._edit_pending:
+            self._audio_original = self._audio_path
+            self._edit_pending   = True
+        self._audio_path = tmp
+        self.player.stop()
+        duration = self.player.load(tmp)
+        self._time_tot.configure(text=_fmt_time(duration))
+        self._dur_lbl.configure(text=f"{_fmt_time(duration)} · WAV (pulito)")
+        self._draw_waveform(tmp)
+        self._edit_clear_sel()
+        self._confirm_bar.grid()
+        self._hide_status()
+        self.player.play(on_end=lambda: self.after(0, self._on_play_end))
+        self._play_btn.configure(text="⏸")
+
+    def _on_clean_error(self, msg: str, tmp: str):
+        self._clean_btn.configure(state="normal", text="✨ Pulisci voce")
+        try: os.unlink(tmp)
+        except Exception: pass
+        self._show_status(f"Errore pulizia: {msg}", DANGER)
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  Velocità
+    # ══════════════════════════════════════════════════════════════════════
+
+    def _show_speed_dialog(self):
+        if not self._audio_path:
+            return
+        win = ctk.CTkToplevel(self)
+        win.title("Cambia velocità")
+        win.geometry("380x230")
+        win.resizable(False, False)
+        win.grab_set()
+
+        ctk.CTkLabel(win, text="Cambia velocità",
+                     font=ctk.CTkFont(size=15, weight="bold")).pack(pady=(16, 2))
+        ctk.CTkLabel(win, text="L'intonazione viene preservata.",
+                     font=ctk.CTkFont(size=11), text_color="gray").pack(pady=(0, 10))
+
+        speed_var = tk.DoubleVar(value=1.0)
+        val_lbl = ctk.CTkLabel(win, text="1.00×",
+                               font=ctk.CTkFont(size=22, weight="bold"),
+                               text_color=ACCENT)
+        val_lbl.pack(pady=(0, 4))
+
+        ctk.CTkSlider(win, from_=0.50, to=2.00, number_of_steps=150,
+                      variable=speed_var,
+                      command=lambda v: val_lbl.configure(text=f"{float(v):.2f}×"),
+                      progress_color=ACCENT, button_color=ACCENT,
+                      button_hover_color=ACCENT_D).pack(fill="x", padx=30, pady=(0, 4))
+
+        pr = ctk.CTkFrame(win, fg_color="transparent")
+        pr.pack(fill="x", padx=30, pady=(0, 12))
+        for label, val in [("0.75×", 0.75), ("1.00×", 1.00), ("1.25×", 1.25), ("1.50×", 1.50)]:
+            ctk.CTkButton(pr, text=label, width=60, height=24,
+                          fg_color="transparent", border_width=1,
+                          text_color=("gray20", "gray80"),
+                          font=ctk.CTkFont(size=10),
+                          command=lambda v=val: (speed_var.set(v),
+                                                 val_lbl.configure(text=f"{v:.2f}×"))
+                          ).pack(side="left", expand=True, padx=2)
+
+        br = ctk.CTkFrame(win, fg_color="transparent")
+        br.pack(fill="x", padx=30, pady=(0, 12))
+        ctk.CTkButton(br, text="Applica", height=32,
+                      fg_color=ACCENT, hover_color=ACCENT_D, text_color="#0a1810",
+                      font=ctk.CTkFont(size=12, weight="bold"),
+                      command=lambda: (win.destroy(), self._apply_speed(float(speed_var.get())))
+                      ).pack(side="left", expand=True, fill="x", padx=(0, 4))
+        ctk.CTkButton(br, text="Annulla", height=32,
+                      fg_color="transparent", border_width=1,
+                      command=win.destroy).pack(side="left", expand=True, fill="x", padx=(4, 0))
+
+    def _apply_speed(self, factor: float):
+        if not self._audio_path or abs(factor - 1.0) < 0.01:
+            return
+        from app.audio.speed import change_speed
+        src = self._audio_path
+        fd, tmp = tempfile.mkstemp(suffix=".wav", prefix="vt_mvspeed_")
+        os.close(fd)
+        self._speed_btn.configure(state="disabled", text="⏳ Elaborazione…")
+        self._show_status(f"Cambio velocità a {factor:.2f}×…", WARN)
+
+        def _run():
+            try:
+                ok = change_speed(src, tmp, factor)
+                self.after(0, lambda: self._on_speed_done(tmp, ok, factor))
+            except Exception as exc:
+                self.after(0, lambda: self._on_speed_error(str(exc), tmp))
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _on_speed_done(self, tmp: str, ok: bool, factor: float):
+        self._speed_btn.configure(state="normal", text="⏱ Velocità")
+        if not ok or not os.path.exists(tmp):
+            self._show_status("Cambio velocità non riuscito.", DANGER)
+            try: os.unlink(tmp)
+            except Exception: pass
+            return
+        if not self._edit_pending:
+            self._audio_original = self._audio_path
+            self._edit_pending   = True
+        self._audio_path = tmp
+        self.player.stop()
+        duration = self.player.load(tmp)
+        self._time_tot.configure(text=_fmt_time(duration))
+        self._dur_lbl.configure(text=f"{_fmt_time(duration)} · WAV ({factor:.2f}×)")
+        self._draw_waveform(tmp)
+        self._edit_clear_sel()
+        self._confirm_bar.grid()
+        self._hide_status()
+        self.player.play(on_end=lambda: self.after(0, self._on_play_end))
+        self._play_btn.configure(text="⏸")
+
+    def _on_speed_error(self, msg: str, tmp: str):
+        self._speed_btn.configure(state="normal", text="⏱ Velocità")
+        try: os.unlink(tmp)
+        except Exception: pass
+        self._show_status(f"Errore velocità: {msg}", DANGER)
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  Export
+    # ══════════════════════════════════════════════════════════════════════
+
+    def _show_export_dialog(self):
+        if not self._audio_path:
+            return
+        ffmpeg  = self._find_ffmpeg()
+        has_mp3 = self._has_lameenc() or bool(ffmpeg)
+        has_ogg = self._has_soundfile_ogg() or bool(ffmpeg)
+
+        win = ctk.CTkToplevel(self)
+        win.title("Esporta audio")
+        win.geometry("440x360")
+        win.resizable(False, False)
+        win.grab_set()
+
+        ctk.CTkLabel(win, text="Esporta Audio",
+                     font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(18, 8))
+
+        fmt_var = tk.StringVar(value="wav")
+        ff = ctk.CTkFrame(win, fg_color="transparent")
+        ff.pack(fill="x", padx=24, pady=(0, 10))
+        for label, val, enabled in [
+            ("WAV  – Lossless, massima fedeltà",      "wav", True),
+            ("MP3  – Compresso, compatibile ovunque",  "mp3", has_mp3),
+            ("OGG  – Compresso, ottimale web/voce",    "ogg", has_ogg),
+        ]:
+            ctk.CTkRadioButton(ff, text=label, variable=fmt_var, value=val,
+                               state="normal" if enabled else "disabled",
+                               fg_color=ACCENT, hover_color=ACCENT_D,
+                               font=ctk.CTkFont(size=12)).pack(anchor="w", pady=3)
+
+        ctk.CTkLabel(win, text="QUALITÀ  (per MP3/OGG)",
+                     font=ctk.CTkFont(size=10, weight="bold"),
+                     text_color="gray").pack(anchor="w", padx=24)
+        quality_var = tk.StringVar(value="web")
+        qf = ctk.CTkFrame(win, fg_color="transparent")
+        qf.pack(fill="x", padx=24, pady=(4, 14))
+        for label, val in [("Web ready  ~48 kbps", "web"),
+                           ("Alta       ~128 kbps", "high"),
+                           ("Massima    ~320 kbps", "max")]:
+            ctk.CTkRadioButton(qf, text=label, variable=quality_var, value=val,
+                               fg_color=ACCENT, hover_color=ACCENT_D,
+                               font=ctk.CTkFont(size=12)).pack(anchor="w", pady=2)
+
+        def do_export():
+            fmt  = fmt_var.get()
+            ext  = {"wav": ".wav", "mp3": ".mp3", "ogg": ".ogg"}[fmt]
+            v    = self._cur_voice()
+            name = v.label if v else "output"
+            dest = filedialog.asksaveasfilename(
+                title="Salva come", defaultextension=ext,
+                filetypes=[(fmt.upper(), f"*{ext}"), ("Tutti i file", "*.*")],
+                initialfile=f"VocalText_{name}{ext}")
+            if not dest:
+                return
+            win.destroy()
+            self._do_export(fmt, quality_var.get(), dest)
+
+        ctk.CTkButton(win, text="Scegli destinazione ed Esporta",
+                      height=40, fg_color=ACCENT, hover_color=ACCENT_D,
+                      text_color="#0a1810",
+                      font=ctk.CTkFont(size=13, weight="bold"),
+                      command=do_export).pack(fill="x", padx=24, pady=(0, 8))
+        ctk.CTkButton(win, text="Annulla", height=30,
+                      fg_color="transparent", border_width=1,
+                      command=win.destroy).pack(fill="x", padx=24)
+
+    def _do_export(self, fmt: str, quality: str, dest: str):
+        import shutil
+        src = self._audio_path
+        if fmt == "wav":
+            try:
+                shutil.copy2(src, dest)
+                kb = os.path.getsize(dest) / 1024
+                self._show_status(f"Salvato: {os.path.basename(dest)} ({kb:.0f} KB)", ACCENT)
+            except Exception as exc:
+                self._show_status(f"Errore: {exc}", DANGER)
+            return
+        self._show_status("Esportazione in corso…", WARN)
+        threading.Thread(target=self._export_worker,
+                         args=(fmt, quality, src, dest), daemon=True).start()
+
+    def _export_worker(self, fmt: str, quality: str, src: str, dest: str):
+        import subprocess
+        try:
+            if fmt == "mp3" and self._has_lameenc():
+                self._export_mp3_lameenc(src, dest, quality)
+            elif fmt == "ogg" and self._has_soundfile_ogg():
+                self._export_ogg_soundfile(src, dest, quality)
+            else:
+                ffmpeg = self._find_ffmpeg()
+                if not ffmpeg:
+                    self.after(0, lambda: self._show_status("FFmpeg non trovato.", DANGER))
+                    return
+                cmd = [ffmpeg, "-y", "-i", src]
+                if fmt == "mp3":
+                    cmd += ["-codec:a", "libmp3lame", "-q:a",
+                            {"max": "0", "high": "2", "web": "5"}.get(quality, "3")]
+                else:
+                    cmd += ["-codec:a", "libopus", "-b:a",
+                            {"max": "128k", "high": "64k", "web": "32k"}.get(quality, "48k"),
+                            "-ac", "1", "-ar", "48000"]
+                cmd.append(dest)
+                r = subprocess.run(cmd, capture_output=True, timeout=120)
+                if r.returncode != 0:
+                    err = r.stderr.decode(errors="replace")[-200:]
+                    self.after(0, lambda: self._show_status(f"Errore FFmpeg: {err}", DANGER))
+                    return
+            if os.path.exists(dest):
+                kb = os.path.getsize(dest) / 1024
+                self.after(0, lambda: self._show_status(
+                    f"Esportato: {os.path.basename(dest)} ({kb:.0f} KB)", ACCENT))
+        except Exception as exc:
+            self.after(0, lambda: self._show_status(f"Errore esportazione: {exc}", DANGER))
+
+    @staticmethod
+    def _has_lameenc() -> bool:
+        try: import lameenc; return True
+        except ImportError: return False
+
+    @staticmethod
+    def _has_soundfile_ogg() -> bool:
+        try:
+            import soundfile as sf
+            return bool(sf.available_subtypes("OGG"))
+        except Exception: return False
+
+    @staticmethod
+    def _soundfile_ogg_subtype() -> str:
+        try:
+            import soundfile as sf
+            s = sf.available_subtypes("OGG")
+            return "OPUS" if "OPUS" in s else "VORBIS"
+        except Exception: return "VORBIS"
+
+    @staticmethod
+    def _find_ffmpeg():
+        import shutil
+        f = shutil.which("ffmpeg")
+        if f: return f
+        for p in [r"C:\ffmpeg\bin\ffmpeg.exe",
+                  r"C:\Program Files\ffmpeg\bin\ffmpeg.exe"]:
+            if os.path.exists(p): return p
+        return None
+
+    @staticmethod
+    def _export_mp3_lameenc(src: str, dest: str, quality: str):
+        import lameenc, wave as _wave, struct as _struct, numpy as _np
+        bitrate = {"max": 320, "high": 128, "web": 48}.get(quality, 64)
+        with _wave.open(src, "rb") as wf:
+            n_ch = wf.getnchannels(); sw = wf.getsampwidth()
+            sr   = wf.getframerate(); raw = wf.readframes(wf.getnframes())
+        fmt = {1: "b", 2: "h", 4: "i"}.get(sw, "h")
+        s = _np.array(_struct.unpack(f"<{len(raw)//sw}{fmt}", raw), dtype=_np.float32)
+        if sw != 2:
+            s = (s / (2 ** (sw * 8 - 1)) * 32767).astype(_np.int16)
+        else:
+            s = s.astype(_np.int16)
+        if n_ch > 1:
+            s = s.reshape(-1, n_ch).mean(axis=1).astype(_np.int16)
+        enc = lameenc.Encoder()
+        enc.set_bit_rate(bitrate); enc.set_in_sample_rate(sr)
+        enc.set_channels(1); enc.set_quality(2)
+        mp3 = enc.encode(s.tobytes()) + enc.flush()
+        with open(dest, "wb") as f: f.write(mp3)
+
+    @staticmethod
+    def _export_ogg_soundfile(src: str, dest: str, quality: str):
+        import soundfile as sf, numpy as _np
+        data, sr = sf.read(src, dtype="float32", always_2d=False)
+        if data.ndim > 1: data = data.mean(axis=1)
+        subtype = MultiVoiceWindow._soundfile_ogg_subtype()
+        if subtype == "OPUS":
+            target_sr = 24000 if quality == "web" else 48000
+            if int(sr) not in [8000, 12000, 16000, 24000, 48000]:
+                try:
+                    from scipy.signal import resample_poly
+                    from math import gcd
+                    g = gcd(int(sr), target_sr)
+                    data = resample_poly(data, target_sr // g, int(sr) // g).astype(_np.float32)
+                    sr = target_sr
+                except Exception: sr = target_sr
+        sf.write(dest, data, int(sr), format="OGG", subtype=subtype,
+                 compression_level={"max": 0.0, "high": 0.3, "web": 0.7}.get(quality, 0.5))
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  Utilities
+    # ══════════════════════════════════════════════════════════════════════
+
+    def _show_status(self, msg: str, color: str = DANGER):
+        self._status_lbl.configure(text=f"⚠  {msg}", text_color=color)
+
+    def _hide_status(self):
+        self._status_lbl.configure(text="")
+
+    def _on_close(self):
+        self.player.quit()
+        self.destroy()
