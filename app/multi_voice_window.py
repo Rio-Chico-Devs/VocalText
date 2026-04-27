@@ -286,6 +286,12 @@ class MultiVoiceWindow(ctk.CTkToplevel):
             fg_color="transparent", border_width=1, text_color=ACCENT,
             font=ctk.CTkFont(size=11), command=self._show_speed_dialog)
         self._speed_btn.pack(side="left", padx=(0, 4))
+        self._regen_btn = ctk.CTkButton(
+            foot, text="↺ Rifai", width=74, height=28,
+            fg_color="transparent", border_width=1, text_color=WARN,
+            font=ctk.CTkFont(size=11), state="disabled",
+            command=self._regenerate_voice)
+        self._regen_btn.pack(side="left", padx=(0, 4))
         ctk.CTkButton(foot, text="Esporta…", width=90, height=28,
                       fg_color=ACCENT, hover_color=ACCENT_D, text_color="#0a1810",
                       font=ctk.CTkFont(size=11, weight="bold"),
@@ -420,6 +426,8 @@ class MultiVoiceWindow(ctk.CTkToplevel):
         else:
             self._player_card.grid_remove()
             self._confirm_bar.grid_remove()
+        self._regen_btn.configure(
+            state="normal" if v.status in ("done", "error") else "disabled")
 
     def _delete_voice(self, vid: str):
         v = self._get_voice(vid)
@@ -447,6 +455,9 @@ class MultiVoiceWindow(ctk.CTkToplevel):
             return
         w["icon"].configure(text=STATUS_ICON[v.status],
                             text_color=STATUS_COLOR[v.status])
+        if vid == self._selected_id:
+            self._regen_btn.configure(
+                state="normal" if v.status in ("done", "error") else "disabled")
 
     def _get_voice(self, vid: str) -> VoiceEntry | None:
         return next((v for v in self._voices if v.id == vid), None)
@@ -553,6 +564,50 @@ class MultiVoiceWindow(ctk.CTkToplevel):
         total = len([x for x in self._voices if x.text.strip()])
         self._prog_lbl.configure(text=f"Completate: {done}/{total}")
         self._prog_bar.set(1.0 if self._gen_total else 0)
+
+    def _regenerate_voice(self):
+        v = self._cur_voice()
+        if not v or v.status == "generating":
+            return
+        if not v.text.strip():
+            self._show_status("Testo vuoto: scrivi il testo prima di rigenerare.", DANGER)
+            return
+        if not self._app._voice:
+            self._show_status("Nessuna voce selezionata nella finestra principale.", DANGER)
+            return
+
+        # Clean up existing audio for this voice
+        for p in (v.audio_path, v.audio_original):
+            if p and os.path.exists(p):
+                try: os.unlink(p)
+                except Exception: pass
+        v.audio_path     = None
+        v.audio_original = None
+        v.edit_pending   = False
+        v.status         = "idle"
+        v.error_msg      = None
+        self._update_voice_row(v.id)
+
+        # Reset player display
+        self.player.stop()
+        self._audio_path     = None
+        self._audio_original = None
+        self._edit_pending   = False
+        self._player_card.grid_remove()
+        self._confirm_bar.grid_remove()
+
+        if self._generating:
+            # Piggyback on the running batch
+            self._gen_queue.append(v.id)
+            self._gen_total += 1
+        else:
+            self._stop_req   = False
+            self._generating = True
+            self._gen_queue  = [v.id]
+            self._gen_total  = 1
+            self._gen_btn.configure(state="disabled")
+            self._stop_btn.configure(state="normal")
+            self._generate_next()
 
     # ══════════════════════════════════════════════════════════════════════
     #  Player logic
