@@ -958,8 +958,12 @@ class VocalTextApp(ctk.CTk):
     # ── Pulizia voce ───────────────────────────────────────────────────────────
 
     def _clean_voice(self):
-        """Pulisce l'audio corrente dal rumore in background.
-        Usa lo stesso workflow Conferma/Annulla degli altri edit."""
+        if not self._audio_path:
+            return
+        from app.ui.clean_dialog import show_clean_dialog
+        show_clean_dialog(self, self._run_clean)
+
+    def _run_clean(self, denoise: float, mix: float, gate: str):
         if not self._audio_path:
             return
         import tempfile
@@ -970,12 +974,14 @@ class VocalTextApp(ctk.CTk):
         os.close(fd)
 
         self._clean_btn.configure(state="disabled", text="⏳ Pulizia in corso…")
-        self._show_error("Pulizia voce in corso… (può richiedere qualche secondo)",
-                         color=WARN)
+        self._show_error("Pulizia voce in corso…", color=WARN)
 
         def _run():
             try:
-                ok = clean_voice(src, tmp)
+                ok = clean_voice(src, tmp,
+                                 denoise_strength=denoise,
+                                 dry_mix=mix,
+                                 gate=gate)
                 self.after(0, lambda: self._on_clean_done(tmp, ok))
             except Exception as exc:
                 self.after(0, lambda: self._on_clean_error(str(exc), tmp))

@@ -840,6 +840,12 @@ class MultiVoiceWindow(ctk.CTkToplevel):
     def _clean_voice(self):
         if not self._audio_path:
             return
+        from app.ui.clean_dialog import show_clean_dialog
+        show_clean_dialog(self, self._run_clean)
+
+    def _run_clean(self, denoise: float, mix: float, gate: str):
+        if not self._audio_path:
+            return
         from app.audio.enhance import clean_voice
         src = self._audio_path
         fd, tmp = tempfile.mkstemp(suffix=".wav", prefix="vt_mvclean_")
@@ -849,7 +855,10 @@ class MultiVoiceWindow(ctk.CTkToplevel):
 
         def _run():
             try:
-                ok = clean_voice(src, tmp)
+                ok = clean_voice(src, tmp,
+                                 denoise_strength=denoise,
+                                 dry_mix=mix,
+                                 gate=gate)
                 self.after(0, lambda: self._on_clean_done(tmp, ok))
             except Exception as exc:
                 self.after(0, lambda: self._on_clean_error(str(exc), tmp))

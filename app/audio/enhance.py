@@ -66,12 +66,18 @@ def _is_valid(samples: np.ndarray) -> bool:
 
 # ── API pubblica ───────────────────────────────────────────────────────────────
 
-def clean_voice(input_path: str, output_path: str | None = None) -> bool:
+def clean_voice(input_path: str, output_path: str | None = None, *,
+                denoise_strength: float = 0.70,
+                dry_mix: float = 0.18,
+                gate: str = "normal") -> bool:
     """
     Pulisce l'audio rimuovendo rumore di fondo. Preserva il timbro.
     Se output_path è None sovrascrive il file sorgente.
-    Ritorna True se la pulizia è andata a buon fine, False se è stato
-    mantenuto l'originale (output silenzioso o errore).
+    Ritorna True se la pulizia è andata a buon fine.
+
+    denoise_strength : 0.30–0.92  (percentuale di rumore rimosso)
+    dry_mix          : 0.00–0.40  (quota di segnale originale nel blend)
+    gate             : "off" | "gentle" | "normal" | "strong"
     """
     if output_path is None:
         output_path = input_path
@@ -81,11 +87,12 @@ def clean_voice(input_path: str, output_path: str | None = None) -> bool:
         return False
 
     try:
-        cleaned = _clean(samples.copy(), sr)
+        cleaned = _clean(samples.copy(), sr,
+                         denoise_strength=denoise_strength,
+                         dry_mix=dry_mix, gate=gate)
         if _is_valid(cleaned):
             _write_wav(output_path, cleaned, sr)
             return True
-        # Risultato silenzioso → ripristina originale
         _write_wav(output_path, samples, sr)
         return False
     except Exception:
@@ -95,19 +102,19 @@ def clean_voice(input_path: str, output_path: str | None = None) -> bool:
 
 # ── Dispatcher ─────────────────────────────────────────────────────────────────
 
-def _clean(samples: np.ndarray, sr: int) -> np.ndarray:
-    """
-    Tenta neurale, poi fallback DSP. In entrambi i casi termina con
-    wet/dry blend + normalize + fade per garantire naturalezza.
-    """
+def _clean(samples: np.ndarray, sr: int, *,
+           denoise_strength: float, dry_mix: float, gate: str) -> np.ndarray:
+    """Tenta neurale, poi fallback DSP."""
     try:
         result = _clean_neural(samples, sr)
         if _is_valid(result):
-            # DeepFilterNet è già naturale: blend leggero (~10%)
-            return _post_process(result, samples, sr, mix=0.10)
+            # DFN è già naturale: usiamo metà del dry_mix richiesto
+            return _post_process(result, samples, sr, mix=dry_mix * 0.55)
     except (ImportError, Exception):
         pass
-    return _clean_dsp(samples, sr)
+    return _clean_dsp(samples, sr,
+                      denoise_strength=denoise_strength,
+                      dry_mix=dry_mix, gate=gate)
 
 
 def _post_process(wet: np.ndarray, dry: np.ndarray, sr: int,
@@ -159,14 +166,16 @@ def _clean_neural(samples: np.ndarray, sr: int) -> np.ndarray:
 
 # ── Path DSP custom (sempre disponibile) ──────────────────────────────────────
 
-def _clean_dsp(samples: np.ndarray, sr: int) -> np.ndarray:
+def _clean_dsp(samples: np.ndarray, sr: int, *,
+               denoise_strength: float, dry_mix: float, gate: str) -> np.ndarray:
     samples = _dc_remove(samples)
     samples = _highpass_80(samples, sr)
-    dry = samples.copy()  # post-HP, base "naturale" senza rumble per il blend
-    samples = _spectral_denoise_aggressive(samples, sr)
-    samples = _noise_gate(samples, sr)
+    dry = samples.copy()
+    samples = _spectral_denoise_aggressive(samples, sr, prop_decrease=denoise_strength)
+    if gate != "off":
+        samples = _noise_gate(samples, sr, preset=gate)
     samples = _light_deesser(samples, sr)
-    return _post_process(samples, dry, sr, mix=0.18)
+    return _post_process(samples, dry, sr, mix=dry_mix)
 
 
 def _dc_remove(samples: np.ndarray) -> np.ndarray:
@@ -184,7 +193,8 @@ def _highpass_80(samples: np.ndarray, sr: int) -> np.ndarray:
         return samples
 
 
-def _spectral_denoise_aggressive(samples: np.ndarray, sr: int) -> np.ndarray:
+def _spectral_denoise_aggressive(samples: np.ndarray, sr: int,
+                                  prop_decrease: float = 0.70) -> np.ndarray:
     """
     Riduzione rumore "soave": efficace ma musicalmente rispettosa.
     - Non-stazionaria → si adatta a rumori variabili
@@ -205,7 +215,7 @@ def _spectral_denoise_aggressive(samples: np.ndarray, sr: int) -> np.ndarray:
             y=samples,
             sr=sr,
             stationary=False,
-            prop_decrease=0.70,
+            prop_decrease=float(prop_decrease),
             n_fft=2048,
             win_length=1024,
             freq_mask_smooth_hz=800,
@@ -223,18 +233,21 @@ def _spectral_denoise_aggressive(samples: np.ndarray, sr: int) -> np.ndarray:
             return samples
 
 
-def _noise_gate(samples: np.ndarray, sr: int) -> np.ndarray:
-    """
-    Gate dolce sui residui di hiss. Ratio basso e release lungo per
-    non tagliare le code naturali della voce (sibilanti, fricative,
-    fiato finale) che renderebbero il parlato "spezzato".
-    """
+_GATE_PRESETS: dict[str, dict] = {
+    "gentle": dict(ratio=2.0, attack_ms=8.0, release_ms=300.0, floor_offset=10),
+    "normal": dict(ratio=3.5, attack_ms=5.0, release_ms=200.0, floor_offset=8),
+    "strong": dict(ratio=6.0, attack_ms=3.0, release_ms=120.0, floor_offset=5),
+}
+
+
+def _noise_gate(samples: np.ndarray, sr: int, preset: str = "normal") -> np.ndarray:
+    """Gate sui residui di hiss con intensità configurabile."""
     try:
         from pedalboard import Pedalboard, NoiseGate
     except ImportError:
         return samples
 
-    # Stima noise floor (12° percentile dell'inviluppo RMS)
+    p = _GATE_PRESETS.get(preset, _GATE_PRESETS["normal"])
     abs_s = np.abs(samples)
     if len(abs_s) < sr:
         return samples
@@ -242,13 +255,11 @@ def _noise_gate(samples: np.ndarray, sr: int) -> np.ndarray:
     env  = _moving_avg(abs_s ** 2, win)
     floor_lin = float(np.percentile(np.sqrt(env + 1e-12), 12))
     floor_db  = 20 * np.log10(max(floor_lin, 1e-6))
-
-    # Soglia +8dB sopra il floor stimato — più conservativa di prima
-    threshold_db = max(-60.0, min(-30.0, floor_db + 8))
+    threshold_db = max(-60.0, min(-30.0, floor_db + p["floor_offset"]))
 
     board = Pedalboard([
-        NoiseGate(threshold_db=threshold_db, ratio=3.5,
-                  attack_ms=5.0, release_ms=200.0)
+        NoiseGate(threshold_db=threshold_db, ratio=p["ratio"],
+                  attack_ms=p["attack_ms"], release_ms=p["release_ms"])
     ])
     audio = samples[np.newaxis, :]
     return board(audio, sr)[0].astype(np.float32)
