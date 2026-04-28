@@ -29,7 +29,12 @@ Catena DSP (in ordine):
 
 from __future__ import annotations
 import wave
+from pathlib import Path
 import numpy as np
+
+# Path del modello DeepFilterNet pre-scaricato (popolato dallo script
+# scripts/download_models.py). Se assente, la pipeline DSP fa da fallback.
+LOCAL_DFN_DIR = Path(__file__).resolve().parents[2] / "models" / "dfn"
 
 
 # ── I/O WAV ────────────────────────────────────────────────────────────────────
@@ -149,12 +154,17 @@ def _clean_neural(samples: np.ndarray, sr: int) -> np.ndarray:
     from df.enhance import enhance, init_df  # type: ignore
     import torch as _torch
 
+    if not LOCAL_DFN_DIR.exists():
+        raise RuntimeError(
+            f"DeepFilterNet non trovato in {LOCAL_DFN_DIR}. "
+            "Scarica con: python scripts/download_models.py")
+
     target_sr = 48000
     audio = samples.copy()
     if sr != target_sr:
         audio = _resample(audio, sr, target_sr)
 
-    model, df_state, _ = init_df()
+    model, df_state, _ = init_df(model_base_dir=str(LOCAL_DFN_DIR))
     tensor = _torch.from_numpy(audio).unsqueeze(0)
     enhanced = enhance(model, df_state, tensor)
     out = enhanced.squeeze(0).cpu().numpy().astype(np.float32)

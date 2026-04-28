@@ -1,17 +1,24 @@
 """
 XTTS v2 wrapper – TTS neurale multilingua con clonazione voce.
 Richiede: pip install TTS
-Il modello (~1.8 GB) viene scaricato automaticamente al primo avvio.
+
+Il modello (~1.8 GB) DEVE essere stato pre-scaricato in ./models/xtts/
+prima del primo utilizzo. L'app non scarica nulla a runtime — esegui:
+    python scripts/download_models.py
 """
 
 import os
 import tempfile
 import threading
 import wave
+from pathlib import Path
 
 import numpy as np
 
-XTTS_MODEL = "tts_models/multilingual/multi-dataset/xtts_v2"
+# Path locale del modello (popolato da scripts/download_models.py).
+# La radice del progetto è 3 livelli sopra questo file:
+#   app/tts/xtts.py  →  app/tts/  →  app/  →  ROOT
+LOCAL_XTTS_DIR = Path(__file__).resolve().parents[2] / "models" / "xtts"
 
 # Soglia sopra la quale attiviamo il chunking automatico.
 # XTTS v2 inizia a degradare (ripetizioni, glitch, troncamenti) oltre i
@@ -156,8 +163,18 @@ class XTTSEngine:
                     _orig_load = _torch.load
                     _torch.load = lambda *a, **kw: _orig_load(*a, **{**kw, "weights_only": False})
                     try:
+                        cfg = LOCAL_XTTS_DIR / "config.json"
+                        if not cfg.exists():
+                            raise RuntimeError(
+                                "Modello XTTS v2 non trovato in "
+                                f"{LOCAL_XTTS_DIR}.\n"
+                                "Esegui una sola volta:\n"
+                                "    python scripts/download_models.py")
                         from TTS.api import TTS
-                        cls._tts = TTS(XTTS_MODEL)
+                        cls._tts = TTS(
+                            model_path=str(LOCAL_XTTS_DIR),
+                            config_path=str(cfg),
+                        )
                     finally:
                         _torch.load = _orig_load
                     if on_done:
