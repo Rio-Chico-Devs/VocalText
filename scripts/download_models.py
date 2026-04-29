@@ -19,8 +19,11 @@ Tempi indicativi (connessione 50 Mbit/s):
 """
 from __future__ import annotations
 import argparse
+import json
 import os
 import sys
+import tarfile
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -35,7 +38,7 @@ PIPER_VOICES = [
     "es_ES-davefx-medium",
     "fr_FR-siwis-medium",
     "de_DE-thorsten-medium",
-    "pt_PT-tugão-medium",
+    "pt_BR-faber-medium",
     "pl_PL-mc_speech-medium",
     "ru_RU-irina-medium",
     "nl_NL-mls-medium",
@@ -73,8 +76,59 @@ def download_xtts() -> bool:
 
 
 def download_dfn() -> bool:
-    return _hf_snapshot("Rikorose/DeepFilterNet3",
-                        MODELS / "dfn", "DeepFilterNet3", "~50 MB")
+    """
+    DFN3 è distribuito via GitHub Releases (non HuggingFace).
+    Interroghiamo l'API per ottenere l'URL del .tar.gz più recente,
+    poi estraiamo in models/dfn/.
+    """
+    target = MODELS / "dfn"
+    target.mkdir(parents=True, exist_ok=True)
+    if (target / ".complete").exists():
+        print(f"✓ DeepFilterNet3 già presente in {target} (skip)")
+        return True
+
+    print(f"→ Scarico DeepFilterNet3 (~50 MB) in {target}…")
+
+    # Risolvi l'URL dell'asset DeepFilterNet3 dal release più recente
+    api = "https://api.github.com/repos/Rikorose/DeepFilterNet/releases/latest"
+    try:
+        with urllib.request.urlopen(api, timeout=30) as r:
+            release = json.loads(r.read())
+    except Exception as exc:
+        print(f"✗ Errore GitHub API: {exc}")
+        return False
+
+    asset_url = None
+    for asset in release.get("assets", []):
+        name = asset.get("name", "")
+        if name.startswith("DeepFilterNet3") and name.endswith(".tar.gz"):
+            asset_url = asset.get("browser_download_url")
+            break
+
+    if not asset_url:
+        # Fallback hardcoded all'ultima release nota
+        asset_url = ("https://github.com/Rikorose/DeepFilterNet/releases/"
+                     "download/v0.5.6/DeepFilterNet3.tar.gz")
+        print(f"  (uso URL fallback: {asset_url})")
+
+    archive = target / "DeepFilterNet3.tar.gz"
+    try:
+        urllib.request.urlretrieve(asset_url, archive)
+    except Exception as exc:
+        print(f"✗ Download fallito: {exc}")
+        return False
+
+    try:
+        with tarfile.open(archive) as tf:
+            tf.extractall(target)
+        archive.unlink()
+    except Exception as exc:
+        print(f"✗ Estrazione fallita: {exc}")
+        return False
+
+    (target / ".complete").touch()
+    print("✓ DeepFilterNet3 pronto.")
+    return True
 
 
 def download_piper_voice(voice_id: str) -> bool:
@@ -100,7 +154,8 @@ def download_piper_voice(voice_id: str) -> bool:
         target = voice_dir / fname
         if target.exists():
             continue
-        url = f"{base}/{fname}"
+        # URL-encode per gestire caratteri non-ASCII nei nomi (es. "tugão")
+        url = urllib.parse.quote(f"{base}/{fname}", safe=":/?&=")
         print(f"  → {voice_id}/{fname}")
         try:
             urllib.request.urlretrieve(url, target)
