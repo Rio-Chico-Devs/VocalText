@@ -65,6 +65,14 @@ class AudioPlayer:
         if not self._pygame_ok or not self._path:
             return
         import pygame
+        # Re-initialize if mixer was quit() by another player or cleanup
+        if not pygame.mixer.get_init():
+            try:
+                pygame.mixer.pre_init(frequency=22050, size=-16, channels=1, buffer=512)
+                pygame.mixer.init()
+            except Exception as exc:
+                print(f"[AudioPlayer] play error: {exc}")
+                return
         with self._lock:
             self._on_end = on_end
             if self._paused:

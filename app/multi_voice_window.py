@@ -532,6 +532,11 @@ class MultiVoiceWindow(ctk.CTkToplevel):
         )
 
     def _on_voice_done(self, vid: str, path: str):
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:
+            return
         v = self._get_voice(vid)
         if v:
             v.status = "done"
@@ -549,6 +554,11 @@ class MultiVoiceWindow(ctk.CTkToplevel):
         self._generate_next()
 
     def _on_voice_error(self, vid: str, msg: str):
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:
+            return
         v = self._get_voice(vid)
         if v:
             v.status = "error"
@@ -624,6 +634,11 @@ class MultiVoiceWindow(ctk.CTkToplevel):
             self._play_btn.configure(text="⏸")
 
     def _on_play_end(self):
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:
+            return
         self._play_btn.configure(text="▶")
         self._seek_var.set(0)
         self._time_cur.configure(text="0:00")
@@ -647,6 +662,11 @@ class MultiVoiceWindow(ctk.CTkToplevel):
         self._play_btn.configure(text="⏸")
 
     def _tick(self):
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:
+            return
         if self.player.is_playing and self.player.duration > 0:
             pos = self.player.position
             self._seek_var.set((pos / self.player.duration) * 100)
