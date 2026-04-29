@@ -12,4 +12,3 @@ build/
 models/*.onnx
 models/*.onnx.json
 bin/
-*.zip
