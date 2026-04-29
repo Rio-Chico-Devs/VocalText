@@ -23,7 +23,7 @@ Catena DSP (in ordine):
   5. NoiseGate residuo dolce (pedalboard, ratio 3.5)
   6. De-esser leggerissimo
   7. Wet/dry blend con la dry reference
-  8. LUFS normalize a -16 dB
+  8. LUFS normalize a -18 dB + limiter anti-clipping a 0.97
   9. Fade in/out
 """
 
@@ -73,7 +73,7 @@ def _is_valid(samples: np.ndarray) -> bool:
 
 def clean_voice(input_path: str, output_path: str | None = None, *,
                 denoise_strength: float = 0.70,
-                dry_mix: float = 0.18,
+                dry_mix: float = 0.25,
                 gate: str = "normal") -> bool:
     """
     Pulisce l'audio rimuovendo rumore di fondo. Preserva il timbro.
@@ -114,7 +114,7 @@ def _clean(samples: np.ndarray, sr: int, *,
         result = _clean_neural(samples, sr)
         if _is_valid(result):
             # DFN è già naturale: usiamo metà del dry_mix richiesto
-            return _post_process(result, samples, sr, mix=dry_mix * 0.55)
+            return _post_process(result, samples, sr, mix=dry_mix * 0.70)
     except (ImportError, Exception):
         pass
     return _clean_dsp(samples, sr,
@@ -222,7 +222,8 @@ def _dc_remove(samples: np.ndarray) -> np.ndarray:
 def _highpass_80(samples: np.ndarray, sr: int) -> np.ndarray:
     try:
         from scipy import signal
-        sos = signal.butter(6, 80.0 / (sr / 2), btype="high", output="sos")
+        # Ordine 3: roll-off più dolce, meno distorsione di fase sui bassi vocali
+        sos = signal.butter(3, 80.0 / (sr / 2), btype="high", output="sos")
         return signal.sosfilt(sos, samples).astype(np.float32)
     except ImportError:
         return samples
@@ -251,27 +252,26 @@ def _spectral_denoise_aggressive(samples: np.ndarray, sr: int,
             sr=sr,
             stationary=False,
             prop_decrease=float(prop_decrease),
-            n_fft=2048,
-            win_length=1024,
-            freq_mask_smooth_hz=800,
-            time_mask_smooth_ms=100,
+            n_fft=4096,        # risoluzione spettrale doppia → meno musical noise
+            win_length=2048,
+            freq_mask_smooth_hz=1500,  # mascheramento più ampio → transizioni fluide
+            time_mask_smooth_ms=250,
         ).astype(np.float32)
     except Exception:
-        # Fallback stazionario se non-stazionario fallisce
         try:
             return nr.reduce_noise(
                 y=samples, sr=sr,
                 stationary=True,
-                prop_decrease=0.65,
+                prop_decrease=0.50,
             ).astype(np.float32)
         except Exception:
             return samples
 
 
 _GATE_PRESETS: dict[str, dict] = {
-    "gentle": dict(ratio=2.0, attack_ms=8.0, release_ms=300.0, floor_offset=10),
-    "normal": dict(ratio=3.5, attack_ms=5.0, release_ms=200.0, floor_offset=8),
-    "strong": dict(ratio=6.0, attack_ms=3.0, release_ms=120.0, floor_offset=5),
+    "gentle": dict(ratio=1.8, attack_ms=15.0, release_ms=400.0, floor_offset=10),
+    "normal": dict(ratio=2.5, attack_ms=10.0, release_ms=250.0, floor_offset=8),
+    "strong": dict(ratio=5.0, attack_ms=5.0,  release_ms=150.0, floor_offset=5),
 }
 
 
@@ -301,7 +301,7 @@ def _noise_gate(samples: np.ndarray, sr: int, preset: str = "normal") -> np.ndar
 
 
 def _light_deesser(samples: np.ndarray, sr: int,
-                   threshold: float = 0.42, ratio: float = 2.5) -> np.ndarray:
+                   threshold: float = 0.60, ratio: float = 2.0) -> np.ndarray:
     """De-esser leggero — rimuove le sibilanti accentuate dal denoise."""
     try:
         from scipy import signal
@@ -333,7 +333,7 @@ def _light_deesser(samples: np.ndarray, sr: int,
 
 
 def _lufs_normalize(samples: np.ndarray, sr: int,
-                    target: float = -16.0) -> np.ndarray:
+                    target: float = -18.0) -> np.ndarray:
     try:
         import pyloudnorm as pyln
         meter = pyln.Meter(sr)
@@ -341,12 +341,17 @@ def _lufs_normalize(samples: np.ndarray, sr: int,
         if loudness > -70.0 and np.isfinite(loudness):
             out = pyln.normalize.loudness(samples, loudness, target)
             if _is_valid(out):
+                # Limiter anti-clipping: se il guadagno LUFS spinge oltre 0 dBFS
+                # riduciamo il picco anziché distorcere
+                peak = float(np.max(np.abs(out)))
+                if peak > 0.97:
+                    out = out * (0.97 / peak)
                 return out.astype(np.float32)
     except (ImportError, Exception):
         pass
     peak = float(np.max(np.abs(samples)))
     if peak > 0:
-        samples = samples / peak * 0.9
+        samples = samples / peak * 0.88
     return samples.astype(np.float32)
 
 
