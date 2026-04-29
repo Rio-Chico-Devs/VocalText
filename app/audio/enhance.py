@@ -145,12 +145,39 @@ def _blend_with_dry(wet: np.ndarray, dry: np.ndarray,
 
 # ── Path neurale (DeepFilterNet, opzionale) ───────────────────────────────────
 
+def _patch_torchaudio_for_dfn() -> None:
+    """Inject torchaudio.backend stub so deepfilternet imports under torchaudio>=2.1."""
+    import sys, types
+    if "torchaudio.backend" in sys.modules:
+        return
+    try:
+        import torchaudio  # noqa: F401
+    except ImportError:
+        return
+    stub = types.ModuleType("torchaudio.backend")
+    stub.get_audio_backend   = lambda: "soundfile"   # type: ignore[attr-defined]
+    stub.set_audio_backend   = lambda _b: None        # type: ignore[attr-defined]
+    stub.list_audio_backends = lambda: ["soundfile"]  # type: ignore[attr-defined]
+    utils_stub = types.ModuleType("torchaudio.backend.utils")
+    utils_stub.get_audio_backend   = stub.get_audio_backend    # type: ignore[attr-defined]
+    utils_stub.set_audio_backend   = stub.set_audio_backend    # type: ignore[attr-defined]
+    utils_stub.list_audio_backends = stub.list_audio_backends  # type: ignore[attr-defined]
+    stub.utils = utils_stub  # type: ignore[attr-defined]
+    sys.modules["torchaudio.backend"]       = stub
+    sys.modules["torchaudio.backend.utils"] = utils_stub
+    try:
+        torchaudio.backend = stub  # type: ignore[attr-defined]
+    except AttributeError:
+        pass
+
+
 def _clean_neural(samples: np.ndarray, sr: int) -> np.ndarray:
     """
     Usa DeepFilterNet se installato (pip install deepfilternet).
     Modello ~50MB, gira su CPU, qualità professionale.
     Lavora a 48kHz internamente — resampla in/out.
     """
+    _patch_torchaudio_for_dfn()
     from df.enhance import enhance, init_df  # type: ignore
     import torch as _torch
 

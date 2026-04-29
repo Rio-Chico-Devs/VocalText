@@ -73,15 +73,35 @@ def download_xtts() -> bool:
     return _hf_snapshot("coqui/XTTS-v2", MODELS / "xtts", "XTTS v2", "~1.8 GB")
 
 
+def _patch_torchaudio_for_dfn() -> None:
+    """Inject torchaudio.backend stub so deepfilternet imports under torchaudio>=2.1."""
+    import sys, types
+    if "torchaudio.backend" in sys.modules:
+        return
+    try:
+        import torchaudio  # noqa: F401
+    except ImportError:
+        return
+    stub = types.ModuleType("torchaudio.backend")
+    stub.get_audio_backend   = lambda: "soundfile"   # type: ignore[attr-defined]
+    stub.set_audio_backend   = lambda _b: None        # type: ignore[attr-defined]
+    stub.list_audio_backends = lambda: ["soundfile"]  # type: ignore[attr-defined]
+    utils_stub = types.ModuleType("torchaudio.backend.utils")
+    utils_stub.get_audio_backend   = stub.get_audio_backend    # type: ignore[attr-defined]
+    utils_stub.set_audio_backend   = stub.set_audio_backend    # type: ignore[attr-defined]
+    utils_stub.list_audio_backends = stub.list_audio_backends  # type: ignore[attr-defined]
+    stub.utils = utils_stub  # type: ignore[attr-defined]
+    sys.modules["torchaudio.backend"]       = stub
+    sys.modules["torchaudio.backend.utils"] = utils_stub
+    try:
+        torchaudio.backend = stub  # type: ignore[attr-defined]
+    except AttributeError:
+        pass
+
+
 def _warn_dfn_import(exc: ImportError) -> None:
-    msg = str(exc)
-    if "torchaudio" in msg or "backend" in msg:
-        print("⚠  DeepFilterNet non può essere scaricato: incompatibile con torchaudio installato.")
-        print(f"   Causa: {exc}")
-        print("   Fix:   pip install \"torchaudio<2.1\"  poi riesegui  python scripts/download_models.py --skip-xtts --skip-piper")
-    else:
-        print(f"⚠  deepfilternet non disponibile: {exc}")
-        print("   Installa con:  pip install deepfilternet")
+    print(f"⚠  deepfilternet non importabile: {exc}")
+    print("   Installa con:  pip install deepfilternet")
     print("   Questo componente è OPZIONALE — l'app usa il pipeline DSP integrato al suo posto.")
 
 
@@ -100,6 +120,7 @@ def download_dfn() -> bool:
     target.mkdir(parents=True, exist_ok=True)
     print(f"→ Scarico DeepFilterNet3 (~50 MB) usando il pacchetto deepfilternet…")
 
+    _patch_torchaudio_for_dfn()
     try:
         from df.utils import maybe_download_model  # type: ignore
     except ImportError as exc:
