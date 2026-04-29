@@ -55,6 +55,10 @@ class VocalTextApp(ctk.CTk):
         self._sel_end:   float | None = None   # secondi
         self._sel_drag_x0: int | None = None   # pixel pressione iniziale
 
+        # Editing non-distruttivo: backup dell'originale finché non confermato
+        self._audio_original: str | None = None   # path originale prima dell'edit
+        self._edit_pending = False                 # c'è un edit non ancora confermato
+
         self._build()
         self.after(120, self._load_voices)
         self.after(120, self._check_engine)
@@ -157,9 +161,18 @@ class VocalTextApp(ctk.CTk):
         self._ref_clear_btn.pack(fill="x", pady=(4, 0))
         self._ref_clear_btn.pack_forget()
 
+        # ── Multi-voci ──
+        ctk.CTkButton(
+            sb, text="🎭  Multi-voci", height=30,
+            fg_color="transparent", border_width=1,
+            text_color=ACCENT, hover_color=("gray85", "gray25"),
+            font=ctk.CTkFont(size=12),
+            command=self._open_multi_voice,
+        ).grid(row=7, column=0, sticky="ew", padx=14, pady=(0, 8))
+
         # ── Parametri ──
         params = ctk.CTkFrame(sb, fg_color="transparent")
-        params.grid(row=6, column=0, sticky="ew", padx=14, pady=(8, 14))
+        params.grid(row=6, column=0, sticky="ew", padx=14, pady=(8, 4))
 
         ctk.CTkLabel(params, text="PARAMETRI",
                      font=ctk.CTkFont(size=10, weight="bold"),
@@ -363,12 +376,56 @@ class VocalTextApp(ctk.CTk):
             font=ctk.CTkFont(size=11),
             command=self._edit_clear_sel).pack(side="left")
 
-        exp = ctk.CTkFrame(parent, fg_color="transparent")
-        exp.grid(row=4, column=0, sticky="ew", padx=10, pady=(0, 10))
+        # ── Barra conferma edit (visibile dopo ogni modifica) ──
+        self._confirm_bar = ctk.CTkFrame(parent, fg_color=("gray90", "#1e2a1e"),
+                                         corner_radius=6)
+        self._confirm_bar.grid(row=4, column=0, sticky="ew", padx=10, pady=(0, 4))
+        self._confirm_bar.grid_remove()
+
+        ctk.CTkLabel(self._confirm_bar,
+                     text="Anteprima modifica — ascolta e poi scegli:",
+                     font=ctk.CTkFont(size=11), text_color=WARN).pack(
+            side="left", padx=(10, 12), pady=6)
+
         ctk.CTkButton(
-            exp, text="⬇  Salva WAV", width=120, height=30,
+            self._confirm_bar, text="✓  Conferma",
+            height=28, width=110,
+            fg_color=ACCENT, hover_color=ACCENT_D, text_color="#0a1810",
+            font=ctk.CTkFont(size=11),
+            command=self._confirm_edit).pack(side="left", padx=(0, 6))
+
+        ctk.CTkButton(
+            self._confirm_bar, text="↩  Annulla",
+            height=28, width=90,
+            fg_color="transparent", border_width=1, text_color=WARN,
+            font=ctk.CTkFont(size=11),
+            command=self._undo_edit).pack(side="left")
+
+        # ── Footer: pulisci voce + export + info durata ──
+        exp = ctk.CTkFrame(parent, fg_color="transparent")
+        exp.grid(row=5, column=0, sticky="ew", padx=10, pady=(0, 10))
+
+        self._clean_btn = ctk.CTkButton(
+            exp, text="✨ Pulisci voce", width=140, height=30,
             fg_color="transparent", border_width=1,
-            command=self._export_wav).pack(side="left")
+            text_color=ACCENT,
+            font=ctk.CTkFont(size=12),
+            command=self._clean_voice)
+        self._clean_btn.pack(side="left", padx=(0, 6))
+
+        self._speed_btn = ctk.CTkButton(
+            exp, text="⏱ Velocità", width=110, height=30,
+            fg_color="transparent", border_width=1,
+            text_color=ACCENT,
+            font=ctk.CTkFont(size=12),
+            command=self._show_speed_dialog)
+        self._speed_btn.pack(side="left", padx=(0, 6))
+
+        ctk.CTkButton(
+            exp, text="Esporta…", width=100, height=30,
+            fg_color=ACCENT, hover_color=ACCENT_D, text_color="#0a1810",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self._show_export_dialog).pack(side="left")
         self._dur_lbl = ctk.CTkLabel(
             exp, text="", font=ctk.CTkFont(size=11), text_color="gray")
         self._dur_lbl.pack(side="right")
@@ -660,6 +717,9 @@ class VocalTextApp(ctk.CTk):
 
     def _on_audio_ready(self, path: str):
         self._audio_path = path
+        self._audio_original = None
+        self._edit_pending   = False
+        self._confirm_bar.grid_remove()
         self._gen_btn.configure(state="normal", text="▶  Genera Audio")
         duration = self.player.load(path)
         self._time_tot.configure(text=_fmt_time(duration))
@@ -795,18 +855,18 @@ class VocalTextApp(ctk.CTk):
         self._apply_edit("crop")
 
     def _apply_edit(self, mode: str):
-        import struct as _struct
+        import tempfile
         path = self._audio_path
         try:
             with wave.open(path, "rb") as wf:
-                n_ch  = wf.getnchannels()
-                sw    = wf.getsampwidth()
-                sr    = wf.getframerate()
-                n_fr  = wf.getnframes()
-                raw   = wf.readframes(n_fr)
+                n_ch = wf.getnchannels()
+                sw   = wf.getsampwidth()
+                sr   = wf.getframerate()
+                n_fr = wf.getnframes()
+                raw  = wf.readframes(n_fr)
 
             fmt = {1: "b", 2: "h", 4: "i"}.get(sw, "h")
-            all_samples = list(_struct.unpack(f"<{n_fr * n_ch}{fmt}", raw))
+            all_samples = list(struct.unpack(f"<{n_fr * n_ch}{fmt}", raw))
 
             s_start = int(self._sel_start * sr) * n_ch
             s_end   = int(self._sel_end   * sr) * n_ch
@@ -822,24 +882,279 @@ class VocalTextApp(ctk.CTk):
                 self._show_error("La modifica produrrebbe un file vuoto.")
                 return
 
-            packed = _struct.pack(f"<{len(result)}{fmt}", *result)
-            with wave.open(path, "wb") as wf:
+            # Scrivi in un file TEMPORANEO — non tocca l'originale
+            fd, tmp = tempfile.mkstemp(suffix=".wav", prefix="vt_edit_")
+            os.close(fd)
+            packed = struct.pack(f"<{len(result)}{fmt}", *result)
+            with wave.open(tmp, "wb") as wf:
                 wf.setnchannels(n_ch)
                 wf.setsampwidth(sw)
                 wf.setframerate(sr)
                 wf.writeframes(packed)
 
-            # Ricarica player e forma d'onda
+            # Prima modifica: salva backup dell'originale
+            if not self._edit_pending:
+                self._audio_original = path
+                self._edit_pending   = True
+
+            # Swap a temp e riproduci subito
+            self._audio_path = tmp
             self.player.stop()
-            duration = self.player.load(path)
+            duration = self.player.load(tmp)
             self._time_tot.configure(text=_fmt_time(duration))
-            self._dur_lbl.configure(text=f"{_fmt_time(duration)} · WAV")
-            self._draw_waveform(path)
+            label_mode = "eliminata selezione" if mode == "delete" else "ritagliato"
+            self._dur_lbl.configure(
+                text=f"{_fmt_time(duration)} · WAV ({label_mode})")
+            self._draw_waveform(tmp)
             self._edit_clear_sel()
+            self._confirm_bar.grid()
             self._hide_error()
+            self.player.play(on_end=lambda: self.after(0, self._on_play_end))
+            self._play_btn.configure(text="⏸")
 
         except Exception as exc:
             self._show_error(f"Errore editing: {exc}")
+
+    def _confirm_edit(self):
+        """Conferma la modifica: il file temp diventa il nuovo audio corrente."""
+        if not self._edit_pending:
+            return
+        # Se l'originale era già un temp, possiamo eliminarlo
+        if self._audio_original and self._audio_original != self._audio_path:
+            try:
+                os.unlink(self._audio_original)
+            except Exception:
+                pass
+        self._audio_original = None
+        self._edit_pending   = False
+        self._confirm_bar.grid_remove()
+        dur = self.player.duration or 0
+        self._dur_lbl.configure(text=f"{_fmt_time(dur)} · WAV")
+
+    def _undo_edit(self):
+        """Annulla la modifica: ripristina l'audio originale."""
+        if not self._edit_pending or not self._audio_original:
+            self._confirm_bar.grid_remove()
+            return
+        # Elimina il file di edit temporaneo
+        if self._audio_path and self._audio_path != self._audio_original:
+            try:
+                os.unlink(self._audio_path)
+            except Exception:
+                pass
+        self._audio_path     = self._audio_original
+        self._audio_original = None
+        self._edit_pending   = False
+        self._confirm_bar.grid_remove()
+        self.player.stop()
+        duration = self.player.load(self._audio_path)
+        self._time_tot.configure(text=_fmt_time(duration))
+        self._dur_lbl.configure(text=f"{_fmt_time(duration)} · WAV")
+        self._draw_waveform(self._audio_path)
+        self._edit_clear_sel()
+        self.player.play(on_end=lambda: self.after(0, self._on_play_end))
+        self._play_btn.configure(text="⏸")
+
+    # ── Pulizia voce ───────────────────────────────────────────────────────────
+
+    def _clean_voice(self):
+        if not self._audio_path:
+            return
+        from app.ui.clean_dialog import show_clean_dialog
+        show_clean_dialog(self, self._run_clean)
+
+    def _run_clean(self, denoise: float, mix: float, gate: str):
+        if not self._audio_path:
+            return
+        import tempfile
+        from app.audio.enhance import clean_voice
+
+        src = self._audio_path
+        fd, tmp = tempfile.mkstemp(suffix=".wav", prefix="vt_clean_")
+        os.close(fd)
+
+        self._clean_btn.configure(state="disabled", text="⏳ Pulizia in corso…")
+        self._show_error("Pulizia voce in corso…", color=WARN)
+
+        def _run():
+            try:
+                ok = clean_voice(src, tmp,
+                                 denoise_strength=denoise,
+                                 dry_mix=mix,
+                                 gate=gate)
+                self.after(0, lambda: self._on_clean_done(tmp, ok))
+            except Exception as exc:
+                self.after(0, lambda: self._on_clean_error(str(exc), tmp))
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _on_clean_done(self, tmp_path: str, ok: bool):
+        self._clean_btn.configure(state="normal", text="✨ Pulisci voce")
+        if not ok or not os.path.exists(tmp_path):
+            self._show_error(
+                "Pulizia non riuscita — l'audio originale non è stato modificato.")
+            try:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+            except Exception:
+                pass
+            return
+
+        # Prima pulizia: salva backup dell'originale
+        if not self._edit_pending:
+            self._audio_original = self._audio_path
+            self._edit_pending   = True
+
+        # Swap a temp pulito e riproduci subito
+        self._audio_path = tmp_path
+        self.player.stop()
+        duration = self.player.load(tmp_path)
+        self._time_tot.configure(text=_fmt_time(duration))
+        self._dur_lbl.configure(text=f"{_fmt_time(duration)} · WAV (pulito)")
+        self._draw_waveform(tmp_path)
+        self._edit_clear_sel()
+        self._confirm_bar.grid()
+        self._hide_error()
+        self.player.play(on_end=lambda: self.after(0, self._on_play_end))
+        self._play_btn.configure(text="⏸")
+
+    def _on_clean_error(self, msg: str, tmp_path: str):
+        self._clean_btn.configure(state="normal", text="✨ Pulisci voce")
+        try:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+        except Exception:
+            pass
+        self._show_error(f"Errore pulizia voce: {msg}")
+
+    # ── Cambio velocità (pitch preservato) ─────────────────────────────────────
+
+    def _show_speed_dialog(self):
+        """Dialog con slider 0.5x – 2.0x. Applica time-stretch pitch-preserving."""
+        if not self._audio_path:
+            return
+
+        win = ctk.CTkToplevel(self)
+        win.title("Cambia velocità")
+        win.geometry("380x230")
+        win.resizable(False, False)
+        win.grab_set()
+
+        ctk.CTkLabel(win, text="Cambia velocità",
+                     font=ctk.CTkFont(size=15, weight="bold")).pack(pady=(16, 2))
+        ctk.CTkLabel(win, text="L'intonazione viene preservata.",
+                     font=ctk.CTkFont(size=11),
+                     text_color="gray").pack(pady=(0, 10))
+
+        speed_var = tk.DoubleVar(value=1.0)
+        val_lbl = ctk.CTkLabel(
+            win, text="1.00×",
+            font=ctk.CTkFont(size=22, weight="bold"),
+            text_color=ACCENT)
+        val_lbl.pack(pady=(0, 4))
+
+        def _on_change(v):
+            val_lbl.configure(text=f"{float(v):.2f}×")
+
+        slider = ctk.CTkSlider(
+            win, from_=0.50, to=2.00, number_of_steps=150,
+            variable=speed_var, command=_on_change,
+            progress_color=ACCENT, button_color=ACCENT, button_hover_color=ACCENT_D)
+        slider.pack(fill="x", padx=30, pady=(0, 4))
+
+        # Marker preset cliccabili
+        preset_row = ctk.CTkFrame(win, fg_color="transparent")
+        preset_row.pack(fill="x", padx=30, pady=(0, 12))
+        for label, val in [("0.75×", 0.75), ("1.00×", 1.00),
+                           ("1.25×", 1.25), ("1.50×", 1.50)]:
+            ctk.CTkButton(
+                preset_row, text=label, width=60, height=24,
+                fg_color="transparent", border_width=1,
+                text_color=("gray20", "gray80"),
+                font=ctk.CTkFont(size=10),
+                command=lambda v=val: (speed_var.set(v),
+                                       val_lbl.configure(text=f"{v:.2f}×"))
+            ).pack(side="left", expand=True, padx=2)
+
+        btn_row = ctk.CTkFrame(win, fg_color="transparent")
+        btn_row.pack(fill="x", padx=30, pady=(0, 12))
+
+        def _apply():
+            factor = float(speed_var.get())
+            win.destroy()
+            self._apply_speed(factor)
+
+        ctk.CTkButton(
+            btn_row, text="Applica", height=32,
+            fg_color=ACCENT, hover_color=ACCENT_D, text_color="#0a1810",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=_apply).pack(side="left", expand=True, fill="x", padx=(0, 4))
+        ctk.CTkButton(
+            btn_row, text="Annulla", height=32,
+            fg_color="transparent", border_width=1,
+            command=win.destroy).pack(side="left", expand=True, fill="x", padx=(4, 0))
+
+    def _apply_speed(self, factor: float):
+        """Time-stretch in background, stesso workflow Conferma/Annulla."""
+        if not self._audio_path:
+            return
+        if abs(factor - 1.0) < 0.01:
+            return
+        import tempfile
+        from app.audio.speed import change_speed
+
+        src = self._audio_path
+        fd, tmp = tempfile.mkstemp(suffix=".wav", prefix="vt_speed_")
+        os.close(fd)
+
+        self._speed_btn.configure(state="disabled", text="⏳ Elaborazione…")
+        self._show_error(f"Cambio velocità a {factor:.2f}×…", color=WARN)
+
+        def _run():
+            try:
+                ok = change_speed(src, tmp, factor)
+                self.after(0, lambda: self._on_speed_done(tmp, ok, factor))
+            except Exception as exc:
+                self.after(0, lambda: self._on_speed_error(str(exc), tmp))
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _on_speed_done(self, tmp_path: str, ok: bool, factor: float):
+        self._speed_btn.configure(state="normal", text="⏱ Velocità")
+        if not ok or not os.path.exists(tmp_path):
+            self._show_error(
+                "Cambio velocità non riuscito — l'audio originale non è stato modificato.")
+            try:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+            except Exception:
+                pass
+            return
+
+        if not self._edit_pending:
+            self._audio_original = self._audio_path
+            self._edit_pending   = True
+
+        self._audio_path = tmp_path
+        self.player.stop()
+        duration = self.player.load(tmp_path)
+        self._time_tot.configure(text=_fmt_time(duration))
+        self._dur_lbl.configure(text=f"{_fmt_time(duration)} · WAV ({factor:.2f}×)")
+        self._draw_waveform(tmp_path)
+        self._edit_clear_sel()
+        self._confirm_bar.grid()
+        self._hide_error()
+        self.player.play(on_end=lambda: self.after(0, self._on_play_end))
+        self._play_btn.configure(text="⏸")
+
+    def _on_speed_error(self, msg: str, tmp_path: str):
+        self._speed_btn.configure(state="normal", text="⏱ Velocità")
+        try:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+        except Exception:
+            pass
+        self._show_error(f"Errore cambio velocità: {msg}")
 
     def _tick(self):
         if self.player.is_playing and self.player.duration > 0:
@@ -908,18 +1223,324 @@ class VocalTextApp(ctk.CTk):
     #  Export
     # ══════════════════════════════════════════════════════════════════════
 
-    def _export_wav(self):
+    @staticmethod
+    def _find_ffmpeg() -> str | None:
+        """Cerca FFmpeg nel PATH e nei percorsi comuni di Windows."""
+        import shutil
+        found = shutil.which("ffmpeg")
+        if found:
+            return found
+        common = [
+            r"C:\ffmpeg\bin\ffmpeg.exe",
+            r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
+            r"C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe",
+            r"C:\tools\ffmpeg\bin\ffmpeg.exe",
+        ]
+        for p in common:
+            if os.path.exists(p):
+                return p
+        return None
+
+    @staticmethod
+    def _has_lameenc() -> bool:
+        try:
+            import lameenc  # noqa: F401
+            return True
+        except ImportError:
+            return False
+
+    @staticmethod
+    def _has_soundfile_ogg() -> bool:
+        """True se soundfile è installato e supporta OGG (Vorbis o Opus)."""
+        try:
+            import soundfile as sf
+            subtypes = sf.available_subtypes("OGG")
+            return bool(subtypes)  # Vorbis è sempre presente se OGG supportato
+        except Exception:
+            return False
+
+    @staticmethod
+    def _soundfile_ogg_subtype() -> str:
+        """Restituisce 'OPUS' se disponibile, altrimenti 'VORBIS'."""
+        try:
+            import soundfile as sf
+            subtypes = sf.available_subtypes("OGG")
+            if "OPUS" in subtypes:
+                return "OPUS"
+            if "VORBIS" in subtypes:
+                return "VORBIS"
+        except Exception:
+            pass
+        return "VORBIS"
+
+    @staticmethod
+    def _has_soundfile_opus() -> bool:
+        """soundfile (libsndfile) supporta Opus dalla 1.0.29 / soundfile 0.12+."""
+        try:
+            import soundfile as sf
+            return "OPUS" in sf.available_subtypes("OGG")
+        except Exception:
+            return False
+
+    def _show_export_dialog(self):
         if not self._audio_path:
             return
-        name = self._voice.name if self._voice else "output"
-        dest = filedialog.asksaveasfilename(
-            title="Salva traccia audio",
-            defaultextension=".wav",
-            filetypes=[("WAV audio", "*.wav"), ("Tutti i file", "*.*")],
-            initialfile=f"VocalText_{name}.wav")
-        if dest:
-            import shutil
-            shutil.copy2(self._audio_path, dest)
+
+        ffmpeg    = self._find_ffmpeg()
+        has_mp3   = self._has_lameenc() or bool(ffmpeg)
+        has_ogg   = self._has_soundfile_ogg() or bool(ffmpeg)
+
+        win = ctk.CTkToplevel(self)
+        win.title("Esporta audio")
+        win.geometry("440x390")
+        win.resizable(False, False)
+        win.grab_set()
+
+        ctk.CTkLabel(win, text="Esporta Audio",
+                     font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(18, 2))
+
+        # Riga stato dipendenze
+        if self._has_lameenc():
+            mp3_note = "MP3 disponibile (lameenc)"
+        elif ffmpeg:
+            mp3_note = "MP3 disponibile (FFmpeg)"
+        else:
+            mp3_note = "MP3 non disponibile — esegui: pip install lameenc"
+
+        if self._has_soundfile_opus():
+            ogg_note = "OGG/Opus disponibile (soundfile)"
+        elif self._has_soundfile_ogg():
+            ogg_note = "OGG/Vorbis disponibile (soundfile)"
+        elif ffmpeg:
+            ogg_note = "OGG/Opus disponibile (FFmpeg)"
+        else:
+            ogg_note = "OGG non disponibile — esegui: pip install soundfile"
+
+        ctk.CTkLabel(win, text=f"● {mp3_note}",
+                     font=ctk.CTkFont(size=11),
+                     text_color=ACCENT if has_mp3 else "gray").pack(anchor="w", padx=24)
+        ctk.CTkLabel(win, text=f"● {ogg_note}",
+                     font=ctk.CTkFont(size=11),
+                     text_color=ACCENT if has_ogg else "gray").pack(anchor="w", padx=24, pady=(0, 8))
+
+        # ── Formato ──
+        ctk.CTkLabel(win, text="FORMATO",
+                     font=ctk.CTkFont(size=10, weight="bold"),
+                     text_color="gray").pack(anchor="w", padx=24)
+
+        fmt_var = tk.StringVar(value="wav")
+        fmt_frame = ctk.CTkFrame(win, fg_color="transparent")
+        fmt_frame.pack(fill="x", padx=24, pady=(4, 10))
+
+        formats = [
+            ("WAV   – Lossless, massima fedeltà",        "wav", True),
+            ("MP3   – Compresso, compatibile ovunque",    "mp3", has_mp3),
+            ("OGG   – Compresso, ottimale web/voce",      "ogg", has_ogg),
+        ]
+        for label, val, enabled in formats:
+            ctk.CTkRadioButton(
+                fmt_frame, text=label, variable=fmt_var, value=val,
+                state="normal" if enabled else "disabled",
+                fg_color=ACCENT, hover_color=ACCENT_D,
+                font=ctk.CTkFont(size=12),
+            ).pack(anchor="w", pady=3)
+
+        # ── Qualità ──
+        ctk.CTkLabel(win, text="QUALITÀ  (per MP3/OGG)",
+                     font=ctk.CTkFont(size=10, weight="bold"),
+                     text_color="gray").pack(anchor="w", padx=24)
+
+        quality_var = tk.StringVar(value="web")
+        q_frame = ctk.CTkFrame(win, fg_color="transparent")
+        q_frame.pack(fill="x", padx=24, pady=(4, 14))
+
+        for label, val in [
+            ("Web ready  – voce leggera ~48 kbps, file piccolo", "web"),
+            ("Alta        – bilanciato ~128 kbps",                "high"),
+            ("Massima    – 320 kbps / lossless",                  "max"),
+        ]:
+            ctk.CTkRadioButton(
+                q_frame, text=label, variable=quality_var, value=val,
+                fg_color=ACCENT, hover_color=ACCENT_D,
+                font=ctk.CTkFont(size=12),
+            ).pack(anchor="w", pady=2)
+
+        def do_export():
+            fmt     = fmt_var.get()
+            quality = quality_var.get()
+            name    = self._voice.name if self._voice else "output"
+            ext     = {"wav": ".wav", "mp3": ".mp3", "ogg": ".ogg"}[fmt]
+            dest = filedialog.asksaveasfilename(
+                title="Salva come",
+                defaultextension=ext,
+                filetypes=[(fmt.upper() + " audio", f"*{ext}"),
+                           ("Tutti i file", "*.*")],
+                initialfile=f"VocalText_{name}{ext}")
+            if not dest:
+                return
+            win.destroy()
+            self._do_export(fmt, quality, dest)
+
+        ctk.CTkButton(
+            win, text="Scegli destinazione ed Esporta",
+            height=40, fg_color=ACCENT, hover_color=ACCENT_D,
+            text_color="#0a1810",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            command=do_export).pack(fill="x", padx=24, pady=(0, 8))
+
+        ctk.CTkButton(
+            win, text="Annulla", height=30,
+            fg_color="transparent", border_width=1,
+            command=win.destroy).pack(fill="x", padx=24)
+
+    def _do_export(self, fmt: str, quality: str, dest: str):
+        """Esegue la conversione in thread separato."""
+        import shutil, subprocess
+        src = self._audio_path
+
+        if fmt == "wav":
+            try:
+                shutil.copy2(src, dest)
+                size_kb = os.path.getsize(dest) / 1024
+                self._show_error(
+                    f"Salvato: {os.path.basename(dest)}  ({size_kb:.0f} KB)",
+                    color=ACCENT)
+            except Exception as exc:
+                self._show_error(f"Errore salvataggio: {exc}")
+            return
+
+        self._show_error("Esportazione in corso…", color=WARN)
+        threading.Thread(
+            target=self._export_worker,
+            args=(fmt, quality, src, dest),
+            daemon=True,
+        ).start()
+
+    def _export_worker(self, fmt: str, quality: str, src: str, dest: str):
+        """Thread worker per conversione MP3/OGG."""
+        import subprocess
+        try:
+            if fmt == "mp3" and self._has_lameenc():
+                self._export_mp3_lameenc(src, dest, quality)
+            elif fmt == "ogg" and self._has_soundfile_ogg():
+                self._export_ogg_soundfile(src, dest, quality)
+            else:
+                ffmpeg = self._find_ffmpeg()
+                if not ffmpeg:
+                    msg = ("Esporta MP3: installa lameenc."
+                           if fmt == "mp3"
+                           else "Esporta OGG: installa soundfile (pip install soundfile).")
+                    self.after(0, lambda m=msg: self._show_error(m))
+                    return
+                cmd = [ffmpeg, "-y", "-i", src]
+                if fmt == "mp3":
+                    q_map = {"max": "0", "high": "2", "web": "5"}
+                    cmd += ["-codec:a", "libmp3lame", "-q:a", q_map.get(quality, "3")]
+                elif fmt == "ogg":
+                    br_map = {"max": "128k", "high": "64k", "web": "32k"}
+                    cmd += ["-codec:a", "libopus", "-b:a",
+                            br_map.get(quality, "48k"),
+                            "-ac", "1", "-ar", "48000"]
+                    if quality == "web":
+                        cmd += ["-application", "voip"]
+                cmd.append(dest)
+                result = subprocess.run(cmd, capture_output=True, timeout=120)
+                if result.returncode != 0:
+                    err = result.stderr.decode(errors="replace")[-300:]
+                    self.after(0, lambda: self._show_error(f"Errore FFmpeg: {err}"))
+                    return
+
+            if os.path.exists(dest):
+                size_kb = os.path.getsize(dest) / 1024
+                self.after(0, lambda: self._show_error(
+                    f"Esportato: {os.path.basename(dest)}  ({size_kb:.0f} KB)",
+                    color=ACCENT))
+        except Exception as exc:
+            self.after(0, lambda: self._show_error(f"Errore esportazione: {exc}"))
+
+    @staticmethod
+    def _export_ogg_soundfile(src: str, dest: str, quality: str):
+        """
+        Encoder OGG tramite libsndfile (via soundfile) — niente FFmpeg.
+        Tenta Opus (richiede libsndfile ≥ 1.0.29), poi Vorbis come fallback.
+        Opus richiede sample rate ∈ {8k,12k,16k,24k,48k}.
+        """
+        import soundfile as sf
+        import numpy as np
+
+        data, sr = sf.read(src, dtype="float32", always_2d=False)
+        if data.ndim > 1:
+            data = data.mean(axis=1)
+
+        subtype = VocalTextApp._soundfile_ogg_subtype()
+
+        if subtype == "OPUS":
+            # Opus richiede sample rate specifico
+            valid_sr = [48000, 24000, 16000, 12000, 8000]
+            target_sr = 24000 if quality == "web" else 48000
+            if int(sr) not in valid_sr:
+                try:
+                    from scipy import signal
+                    from math import gcd
+                    g = gcd(int(sr), target_sr)
+                    data = signal.resample_poly(data, target_sr // g, int(sr) // g).astype(np.float32)
+                    sr = target_sr
+                except Exception:
+                    sr = target_sr
+
+        # compression_level: 0=max qualità, 1=min qualità (Opus e Vorbis)
+        level_map = {"max": 0.0, "high": 0.3, "web": 0.7}
+        sf.write(
+            dest, data, int(sr),
+            format="OGG", subtype=subtype,
+            compression_level=level_map.get(quality, 0.5),
+        )
+
+    @staticmethod
+    def _export_mp3_lameenc(src: str, dest: str, quality: str):
+        """
+        Encoder MP3 puro Python via lameenc — non richiede FFmpeg.
+        Legge il WAV sorgente, converte in mono se necessario, codifica.
+        """
+        import lameenc
+
+        bitrate_map = {"max": 320, "high": 128, "web": 48}
+        vbr_q_map   = {"max": 2,   "high": 2,   "web": 5}
+        bitrate = bitrate_map.get(quality, 64)
+        vbr_q   = vbr_q_map.get(quality, 3)
+
+        with wave.open(src, "rb") as wf:
+            n_ch   = wf.getnchannels()
+            sr     = wf.getframerate()
+            sw     = wf.getsampwidth()
+            n_fr   = wf.getnframes()
+            raw    = wf.readframes(n_fr)
+
+        # Assicura PCM 16-bit little-endian
+        if sw == 2:
+            pcm = raw
+        elif sw == 1:
+            import array as _arr
+            samples8 = _arr.array("B", raw)
+            samples16 = _arr.array("h", ((s - 128) << 8 for s in samples8))
+            pcm = samples16.tobytes()
+        else:
+            # 32-bit → scala a 16-bit
+            import struct as _s
+            vals = _s.unpack(f"<{n_fr * n_ch}i", raw)
+            import array as _arr
+            s16 = _arr.array("h", (v >> 16 for v in vals))
+            pcm = s16.tobytes()
+
+        encoder = lameenc.Encoder()
+        encoder.set_bit_rate(bitrate)
+        encoder.set_in_sample_rate(sr)
+        encoder.set_channels(n_ch)
+        encoder.set_quality(vbr_q)
+
+        mp3_data = encoder.encode(pcm) + encoder.flush()
+        with open(dest, "wb") as f:
+            f.write(mp3_data)
 
     # ══════════════════════════════════════════════════════════════════════
     #  Helpers
@@ -937,6 +1558,22 @@ class VocalTextApp(ctk.CTk):
 
     def _hide_error(self):
         self._err_lbl.configure(text="")
+
+    def _open_multi_voice(self):
+        # Singleton: se la finestra esiste già la riporta in primo piano
+        existing = getattr(self, "_multi_voice_win", None)
+        if existing is not None:
+            try:
+                if existing.winfo_exists():
+                    existing.deiconify()
+                    existing.lift()
+                    existing.focus_force()
+                    return
+            except Exception:
+                pass
+        from app.multi_voice_window import MultiVoiceWindow
+        win = MultiVoiceWindow(self)
+        self._multi_voice_win = win
 
     def _on_close(self):
         self.player.quit()
