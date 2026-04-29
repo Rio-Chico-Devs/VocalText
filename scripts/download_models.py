@@ -73,6 +73,18 @@ def download_xtts() -> bool:
     return _hf_snapshot("coqui/XTTS-v2", MODELS / "xtts", "XTTS v2", "~1.8 GB")
 
 
+def _warn_dfn_import(exc: ImportError) -> None:
+    msg = str(exc)
+    if "torchaudio" in msg or "backend" in msg:
+        print("⚠  DeepFilterNet non può essere scaricato: incompatibile con torchaudio installato.")
+        print(f"   Causa: {exc}")
+        print("   Fix:   pip install \"torchaudio<2.1\"  poi riesegui  python scripts/download_models.py --skip-xtts --skip-piper")
+    else:
+        print(f"⚠  deepfilternet non disponibile: {exc}")
+        print("   Installa con:  pip install deepfilternet")
+    print("   Questo componente è OPZIONALE — l'app usa il pipeline DSP integrato al suo posto.")
+
+
 def download_dfn() -> bool:
     """
     DFN3 viene scaricato usando la funzione interna del pacchetto
@@ -91,9 +103,8 @@ def download_dfn() -> bool:
     try:
         from df.utils import maybe_download_model  # type: ignore
     except ImportError as exc:
-        print(f"✗ Pacchetto 'deepfilternet' non disponibile: {exc}")
-        print("   Installa con:  pip install deepfilternet")
-        return False
+        _warn_dfn_import(exc)
+        return True  # opzionale — non blocca il setup
 
     try:
         cache_path = maybe_download_model("DeepFilterNet3")
