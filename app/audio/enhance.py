@@ -181,10 +181,8 @@ def _clean_neural(samples: np.ndarray, sr: int) -> np.ndarray:
     from df.enhance import enhance, init_df  # type: ignore
     import torch as _torch
 
-    if not LOCAL_DFN_DIR.exists():
-        raise RuntimeError(
-            f"DeepFilterNet non trovato in {LOCAL_DFN_DIR}. "
-            "Scarica con: python scripts/download_models.py")
+    if not LOCAL_DFN_DIR.exists() or not (LOCAL_DFN_DIR / ".complete").exists():
+        raise RuntimeError("DeepFilterNet non scaricato. Esegui: python scripts/download_models.py")
 
     target_sr = 48000
     audio = samples.copy()
