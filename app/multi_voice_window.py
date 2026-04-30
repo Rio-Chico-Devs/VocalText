@@ -198,6 +198,10 @@ class MultiVoiceWindow(ctk.CTkToplevel):
             width=160, height=26,
             dynamic_resizing=False)
         self._emotion_menu_mv.pack(side="left", padx=(6, 0))
+        self._emotion_hint = ctk.CTkLabel(
+            em_row, text="", font=ctk.CTkFont(size=10),
+            text_color="gray")
+        self._emotion_hint.pack(side="left", padx=(8, 0))
 
         self._textbox = ctk.CTkTextbox(frame, font=ctk.CTkFont(size=13),
                                        wrap="word", height=130)
@@ -213,6 +217,19 @@ class MultiVoiceWindow(ctk.CTkToplevel):
         v = self._cur_voice()
         if v:
             v.emotion = value
+        self._update_emotion_hint(value)
+
+    def _update_emotion_hint(self, emotion: str):
+        """Mostra se il tono ha un file dedicato o se userà il fallback generico."""
+        if emotion == "Generico":
+            self._emotion_hint.configure(text="")
+            return
+        em_ref = getattr(self._app, "_emotion_refs", {}).get(emotion)
+        if em_ref and os.path.exists(em_ref):
+            self._emotion_hint.configure(text="● file caricato", text_color=ACCENT)
+        else:
+            self._emotion_hint.configure(
+                text="○ nessun file → usa generico", text_color=WARN)
 
     def _get_voice_ref(self, v: "VoiceEntry") -> "str | None":
         """WAV di riferimento per la voce v: usa il tono specifico se caricato."""
@@ -439,6 +456,7 @@ class MultiVoiceWindow(ctk.CTkToplevel):
         self._textbox.delete("1.0", "end")
         self._textbox.insert("1.0", v.text)
         self._emotion_var.set(v.emotion)
+        self._update_emotion_hint(v.emotion)
 
         # Update player
         self._edit_clear_sel()

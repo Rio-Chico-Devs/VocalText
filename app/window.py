@@ -175,6 +175,11 @@ class VocalTextApp(ctk.CTk):
         ctk.CTkLabel(self._xtts_panel, text="TONO EMOTIVO (opzionale)",
                      font=ctk.CTkFont(size=10, weight="bold"),
                      text_color="gray", anchor="w").pack(fill="x")
+        ctk.CTkLabel(
+            self._xtts_panel,
+            text="Carica un WAV (~6 sec) della STESSA voce\nnel tono desiderato. Senza file → usa il generico.",
+            font=ctk.CTkFont(size=10), text_color="gray",
+            justify="left").pack(fill="x", pady=(2, 4))
 
         self._emotion_menu = ctk.CTkOptionMenu(
             self._xtts_panel, values=EMOTIONS,
