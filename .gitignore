@@ -9,6 +9,17 @@ build/
 .DS_Store
 *.log
 *.tmp
-models/*.onnx
-models/*.onnx.json
+# Modelli ML — scaricati via scripts/download_models.py, mai committati
+models/**/*.onnx
+models/**/*.onnx.json
+models/**/*.onnx_data
+models/**/*.pth
+models/**/*.bin
+models/**/*.safetensors
+models/xtts/
+models/dfn/
+models/piper/
+models/*-medium/
+models/*-low/
+models/*-high/
 bin/
