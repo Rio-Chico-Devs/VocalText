@@ -31,6 +31,12 @@ LANGUAGES = {
 }
 
 
+EMOTIONS = [
+    "Generico", "Narrazione", "Rabbia", "Tristezza",
+    "Pianto", "Felicità", "Sfida", "Urla", "Sussurro",
+]
+
+
 class VocalTextApp(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -47,6 +53,8 @@ class VocalTextApp(ctk.CTk):
         self._lang    = tk.StringVar(value="it")
         self._polish  = tk.BooleanVar(value=True)
         self._ref_wav: str | None = None
+        self._emotion_refs: dict[str, str | None] = {e: None for e in EMOTIONS}
+        self._active_emotion: str = EMOTIONS[0]
         self._audio_path: str | None = None
         self._voice_rows: dict[str, ctk.CTkFrame] = {}
 
@@ -160,6 +168,46 @@ class VocalTextApp(ctk.CTk):
             command=self._clear_ref_wav)
         self._ref_clear_btn.pack(fill="x", pady=(4, 0))
         self._ref_clear_btn.pack_forget()
+
+        # ── Tono emotivo ──
+        ctk.CTkFrame(self._xtts_panel, height=1,
+                     fg_color=("gray80", "gray35")).pack(fill="x", pady=(10, 6))
+        ctk.CTkLabel(self._xtts_panel, text="TONO EMOTIVO (opzionale)",
+                     font=ctk.CTkFont(size=10, weight="bold"),
+                     text_color="gray", anchor="w").pack(fill="x")
+
+        self._emotion_menu = ctk.CTkOptionMenu(
+            self._xtts_panel, values=EMOTIONS,
+            command=self._on_emotion_change,
+            fg_color=("gray85", "gray25"),
+            button_color=ACCENT, button_hover_color=ACCENT_D,
+            dynamic_resizing=False, width=200)
+        self._emotion_menu.set(EMOTIONS[0])
+        self._emotion_menu.pack(fill="x", pady=(4, 0))
+
+        self._emotion_panel = ctk.CTkFrame(self._xtts_panel, fg_color="transparent")
+        self._emotion_panel.pack(fill="x")
+        self._emotion_panel.pack_forget()
+
+        em_row = ctk.CTkFrame(self._emotion_panel, fg_color="transparent")
+        em_row.pack(fill="x", pady=(4, 0))
+        self._emotion_lbl = ctk.CTkLabel(
+            em_row, text="Nessun file selezionato",
+            font=ctk.CTkFont(size=11), text_color="gray",
+            anchor="w", wraplength=140)
+        self._emotion_lbl.pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(
+            em_row, text="Sfoglia", width=64, height=26,
+            fg_color="transparent", border_width=1,
+            command=self._pick_emotion_wav).pack(side="right")
+
+        self._emotion_clear_btn = ctk.CTkButton(
+            self._emotion_panel, text="✕  Rimuovi tono",
+            height=26, fg_color="transparent", border_width=1,
+            text_color=DANGER, hover_color=("gray85", "gray25"),
+            command=self._clear_emotion_wav)
+        self._emotion_clear_btn.pack(fill="x", pady=(4, 0))
+        self._emotion_clear_btn.pack_forget()
 
         # ── Multi-voci ──
         ctk.CTkButton(
@@ -617,6 +665,46 @@ class VocalTextApp(ctk.CTk):
             text="Nessun file selezionato", text_color="gray")
         self._ref_clear_btn.pack_forget()
 
+    def _get_ref_wav(self) -> str | None:
+        """Ritorna il WAV attivo: quello del tono selezionato se caricato, altrimenti generico."""
+        if self._active_emotion != "Generico":
+            em = self._emotion_refs.get(self._active_emotion)
+            if em and os.path.exists(em):
+                return em
+        return self._ref_wav
+
+    def _on_emotion_change(self, value: str):
+        self._active_emotion = value
+        if value == "Generico":
+            self._emotion_panel.pack_forget()
+        else:
+            self._emotion_panel.pack(fill="x")
+            em = self._emotion_refs.get(value)
+            if em:
+                self._emotion_lbl.configure(
+                    text=os.path.basename(em), text_color=ACCENT)
+                self._emotion_clear_btn.pack(fill="x", pady=(4, 0))
+            else:
+                self._emotion_lbl.configure(
+                    text=f"Nessun file per {value}", text_color="gray")
+                self._emotion_clear_btn.pack_forget()
+
+    def _pick_emotion_wav(self):
+        path = filedialog.askopenfilename(
+            title=f"Audio tono — {self._active_emotion}",
+            filetypes=[("File WAV", "*.wav"), ("Tutti i file", "*.*")])
+        if path:
+            self._emotion_refs[self._active_emotion] = path
+            self._emotion_lbl.configure(
+                text=os.path.basename(path), text_color=ACCENT)
+            self._emotion_clear_btn.pack(fill="x", pady=(4, 0))
+
+    def _clear_emotion_wav(self):
+        self._emotion_refs[self._active_emotion] = None
+        self._emotion_lbl.configure(
+            text=f"Nessun file per {self._active_emotion}", text_color="gray")
+        self._emotion_clear_btn.pack_forget()
+
     # ══════════════════════════════════════════════════════════════════════
     #  Text editor
     # ══════════════════════════════════════════════════════════════════════
@@ -697,7 +785,7 @@ class VocalTextApp(ctk.CTk):
                 speed=self._speed.get(),
                 volume=self._volume.get(),
                 language=self._lang.get(),
-                reference_wav=self._ref_wav,
+                reference_wav=self._get_ref_wav(),
                 polish=self._polish.get(),
                 on_done=lambda p: self.after(0, lambda: self._on_audio_ready(p)),
                 on_error=lambda e: self.after(0, lambda: self._on_gen_error(e)),
@@ -709,7 +797,7 @@ class VocalTextApp(ctk.CTk):
                 speed=self._speed.get(),
                 volume=self._volume.get(),
                 language=self._lang.get(),
-                reference_wav=self._ref_wav,
+                reference_wav=self._get_ref_wav(),
                 polish=self._polish.get(),
                 on_done=lambda p: self.after(0, lambda: self._on_audio_ready(p)),
                 on_error=lambda e: self.after(0, lambda: self._on_gen_error(e)),
