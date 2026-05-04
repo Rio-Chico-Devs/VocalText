@@ -30,6 +30,11 @@ LANGUAGES = {
     "hi": "हिंदी",
 }
 
+EMOTIONS = [
+    "Generico", "Narrazione", "Rabbia", "Tristezza",
+    "Pianto", "Felicità", "Sfida", "Urla", "Sussurro",
+]
+
 STATUS_ICON  = {"idle": "○", "generating": "⏳", "done": "●", "error": "✗"}
 STATUS_COLOR = {"idle": "gray", "generating": WARN, "done": ACCENT, "error": DANGER}
 
@@ -39,6 +44,7 @@ class VoiceEntry:
     id: str
     label: str
     text: str = ""
+    emotion: str = "Generico"
     status: str = "idle"
     audio_path: str | None = None
     audio_original: str | None = None
@@ -169,23 +175,69 @@ class MultiVoiceWindow(ctk.CTkToplevel):
     def _build_editor(self, parent):
         frame = ctk.CTkFrame(parent, fg_color="transparent")
         frame.grid(row=0, column=0, sticky="nsew", padx=12, pady=(10, 4))
-        frame.grid_rowconfigure(1, weight=1)
+        frame.grid_rowconfigure(2, weight=1)
         frame.grid_columnconfigure(0, weight=1)
 
         self._voice_label = ctk.CTkLabel(
             frame, text="Aggiungi una voce e scrivi il testo",
             font=ctk.CTkFont(size=13, weight="bold"), text_color=ACCENT)
-        self._voice_label.grid(row=0, column=0, sticky="w", pady=(0, 4))
+        self._voice_label.grid(row=0, column=0, sticky="w", pady=(0, 2))
+
+        # Emotion selector per-voce
+        em_row = ctk.CTkFrame(frame, fg_color="transparent")
+        em_row.grid(row=1, column=0, sticky="ew", pady=(0, 4))
+        ctk.CTkLabel(em_row, text="Tono:",
+                     font=ctk.CTkFont(size=11), text_color="gray").pack(side="left")
+        self._emotion_var = tk.StringVar(value="Generico")
+        self._emotion_menu_mv = ctk.CTkOptionMenu(
+            em_row, variable=self._emotion_var,
+            values=EMOTIONS,
+            command=self._on_mv_emotion_change,
+            fg_color=("gray85", "gray25"),
+            button_color=ACCENT, button_hover_color=ACCENT_D,
+            width=160, height=26,
+            dynamic_resizing=False)
+        self._emotion_menu_mv.pack(side="left", padx=(6, 0))
+        self._emotion_hint = ctk.CTkLabel(
+            em_row, text="", font=ctk.CTkFont(size=10),
+            text_color="gray")
+        self._emotion_hint.pack(side="left", padx=(8, 0))
 
         self._textbox = ctk.CTkTextbox(frame, font=ctk.CTkFont(size=13),
                                        wrap="word", height=130)
-        self._textbox.grid(row=1, column=0, sticky="nsew")
+        self._textbox.grid(row=2, column=0, sticky="nsew")
         self._textbox.bind("<KeyRelease>", self._on_text_edit)
 
     def _on_text_edit(self, _=None):
         v = self._cur_voice()
         if v:
             v.text = self._textbox.get("1.0", "end").strip()
+
+    def _on_mv_emotion_change(self, value: str):
+        v = self._cur_voice()
+        if v:
+            v.emotion = value
+        self._update_emotion_hint(value)
+
+    def _update_emotion_hint(self, emotion: str):
+        """Mostra se il tono ha un file dedicato o se userà il fallback generico."""
+        if emotion == "Generico":
+            self._emotion_hint.configure(text="")
+            return
+        em_ref = getattr(self._app, "_emotion_refs", {}).get(emotion)
+        if em_ref and os.path.exists(em_ref):
+            self._emotion_hint.configure(text="● file caricato", text_color=ACCENT)
+        else:
+            self._emotion_hint.configure(
+                text="○ nessun file → usa generico", text_color=WARN)
+
+    def _get_voice_ref(self, v: "VoiceEntry") -> "str | None":
+        """WAV di riferimento per la voce v: usa il tono specifico se caricato."""
+        if v.emotion and v.emotion != "Generico":
+            em_ref = getattr(self._app, "_emotion_refs", {}).get(v.emotion)
+            if em_ref and os.path.exists(em_ref):
+                return em_ref
+        return self._app._ref_wav
 
     # ── Player card ───────────────────────────────────────────────────────
 
@@ -403,6 +455,8 @@ class MultiVoiceWindow(ctk.CTkToplevel):
         self._voice_label.configure(text=v.label)
         self._textbox.delete("1.0", "end")
         self._textbox.insert("1.0", v.text)
+        self._emotion_var.set(v.emotion)
+        self._update_emotion_hint(v.emotion)
 
         # Update player
         self._edit_clear_sel()
@@ -513,7 +567,7 @@ class MultiVoiceWindow(ctk.CTkToplevel):
         self._update_voice_row(vid)
 
         voice    = self._app._voice
-        ref_wav  = self._app._ref_wav
+        ref_wav  = self._get_voice_ref(v)
         lang     = self._lang.get()
         polish   = self._polish.get()
 
